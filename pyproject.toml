@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idasdlc"
+version = "0.3.0"
+description = "Iterative Deployment for Agentic SDLC platform"
+authors = [{name = "Evolution Coding"}]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "sqlmodel>=0.0.22",
+    "sqlalchemy>=2.0",
+    "typer[all]>=0.12",
+    "rich>=13.7",
+    "httpx>=0.26",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+    "orjson>=3.9",
+    "aiofiles>=23.2",
+    "libcst>=1.3",
+    "python-dateutil>=2.9",
+    "structlog>=24.1",
+    "pyyaml>=6.0",
+    "websockets>=12.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.11"
+]
+
+[project.scripts]
+idasdlc = "apps.cli.main:app"
+idasdlc-api = "apps.backend.main:run"
+aether = "apps.aether_cli.main:main"
+aether-server = "apps.aether_server.main:run"
+
+[tool.setuptools]
+packages = [
+    "apps",
+    "apps.backend",
+    "apps.backend.api",
+    "apps.backend.routers",
+    "apps.backend.services",
+    "apps.cli",
+    "apps.aether_server",
+    "apps.aether_cli",
+    "packages",
+    "packages.idasdlc_core",
+    "packages.idasdlc_core.models",
+    "packages.idasdlc_core.repositories",
+    "packages.idasdlc_core.retrieval",
+    "packages.idasdlc_core.services",
+    "packages.idasdlc_core.utils",
+    "packages.idasdlc_core.validators",
+    "packages.aether",
+    "packages.aether.adapters",
+    "packages.aether.api",
+    "packages.aether.crdt",
+    "packages.aether.git",
+    "packages.aether.models",
+    "packages.aether.services",
+    "packages.aether.synthesis_worker",
+    "packages.otterbot"
+]
+package-dir = {"" = "."}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

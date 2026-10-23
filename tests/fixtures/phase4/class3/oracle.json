@@ -1,0 +1,61 @@
+{
+  "scenario": "class3",
+  "expected_terminal_counts": {
+    "PROMOTED": 1,
+    "REJECTED": 1
+  },
+  "expected_outcome": "PROMOTED",
+  "expected_reason": "sequential_degradation_success",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "lib.py",
+        "affected_symbols": [
+          "lib.py::FUNC:add"
+        ],
+        "content": "def add(a, b, c):\n    return a + b + c\n"
+      }
+    },
+    {
+      "id": "agent_2",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:main"
+        ],
+        "content": "from lib import add\ndef main():\n    add(1, 2)\n    print('Agent 2 added this!')\n\nif __name__ == '__main__':\n    main()\n"
+      }
+    }
+  ],
+  "golden_assertions": {
+    "app.py": {
+      "must_contain": [
+        "Agent 2 added this!"
+      ],
+      "must_not_contain": []
+    },
+    "lib.py": {
+      "must_contain": [
+        "def add(a, b):"
+      ],
+      "must_not_contain": [
+        "def add(a, b, c):"
+      ]
+    }
+  },
+  "gate_config": {
+    "gates": [
+      {
+        "name": "syntax",
+        "command": "python3 -m py_compile *.py",
+        "timeout_seconds": 10
+      },
+      {
+        "name": "unit_tests",
+        "command": "python3 app.py",
+        "timeout_seconds": 10
+      }
+    ]
+  }
+}

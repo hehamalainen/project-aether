@@ -1,0 +1,31 @@
+Auditing exclusivity for 20 repositories:
+  Repo: continuous-swarm-50-repo-0 (ID: repo_defc8181249b)
+  Repo: continuous-swarm-50-repo-1 (ID: repo_e3c1ddd1ab67)
+  Repo: continuous-swarm-50-repo-2 (ID: repo_499c9e87b6ba)
+  Repo: continuous-swarm-50-repo-3 (ID: repo_e54d19915fc4)
+  Repo: continuous-swarm-50-repo-4 (ID: repo_fae9213b558b)
+  Repo: continuous-swarm-50-repo-5 (ID: repo_df1ebe3571f3)
+  Repo: continuous-swarm-50-repo-6 (ID: repo_cc7d66462009)
+  Repo: continuous-swarm-50-repo-7 (ID: repo_d6f1cf89ad09)
+  Repo: continuous-swarm-50-repo-8 (ID: repo_93c4a2e79e6d)
+  Repo: continuous-swarm-50-repo-9 (ID: repo_84c06207fe98)
+  Repo: continuous-swarm-100-repo-0 (ID: repo_40c26f1d43b8)
+  Repo: continuous-swarm-100-repo-1 (ID: repo_3f46d0558123)
+  Repo: continuous-swarm-100-repo-2 (ID: repo_7a036080f2f1)
+  Repo: continuous-swarm-100-repo-3 (ID: repo_2c692d5881a8)
+  Repo: continuous-swarm-100-repo-4 (ID: repo_888a3c969762)
+  Repo: continuous-swarm-100-repo-5 (ID: repo_e25541e56832)
+  Repo: continuous-swarm-100-repo-6 (ID: repo_2a0bdb77b702)
+  Repo: continuous-swarm-100-repo-7 (ID: repo_096d0a59e237)
+  Repo: continuous-swarm-100-repo-8 (ID: repo_4235bd1995c9)
+  Repo: continuous-swarm-100-repo-9 (ID: repo_69070c5983fa)
+
+Running audit per repository...
+  No proposals found for repo continuous-swarm-50-repo-0
+  No proposals found for repo continuous-swarm-50-repo-8
+  No proposals found for repo continuous-swarm-50-repo-9
+  No proposals found for repo continuous-swarm-100-repo-0
+  No proposals found for repo continuous-swarm-100-repo-8
+
+==================== AUDIT RESULTS ====================
+Exclusivity Audit PASSED: Exactly-one-winner constraint satisfied for all contention groups (zero co-promotions detected).

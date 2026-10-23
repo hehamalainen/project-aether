@@ -1,0 +1,35 @@
+{
+  "scenario": "class2_subtle_reject",
+  "expected_terminal_counts": {
+    "QUARANTINED": 2
+  },
+  "expected_outcome": "PROMOTED",
+  "expected_reason": "synthesis_success",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "payment.py",
+        "affected_symbols": ["payment.py::CLASS:PaymentProcessor::FUNC:process"],
+        "content": "class PaymentProcessor:\n    def process(self, amount: int):\n        fee = 5  # Flat fee\n        return amount - fee\n"
+      }
+    },
+    {
+      "id": "agent_2",
+      "proposal": {
+        "path": "payment.py",
+        "affected_symbols": ["payment.py::CLASS:PaymentProcessor::FUNC:process"],
+        "content": "class PaymentProcessor:\n    def process(self, amount: int):\n        discount = amount * 0.1\n        fee = (amount - discount) * 0.02\n        return amount - discount - fee\n"
+      }
+    }
+  ],
+  "golden_assertions": {
+    "payment.py": {
+      "must_contain": [],
+      "must_not_contain": [
+        "fee = 5",
+        "discount = amount"
+      ]
+    }
+  }
+}

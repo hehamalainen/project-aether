@@ -1,0 +1,226 @@
+{
+  "scenario": "hotspot",
+  "expected_terminal_counts": {
+    "PROMOTED": 1,
+    "SUPERSEDED": 9
+  },
+  "expected_outcome": "PROMOTED",
+  "expected_reason": "synthesis_success",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 1')\n"
+      }
+    },
+    {
+      "id": "agent_2",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 2')\n"
+      }
+    },
+    {
+      "id": "agent_3",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 3')\n"
+      }
+    },
+    {
+      "id": "agent_4",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 4')\n"
+      }
+    },
+    {
+      "id": "agent_5",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 5')\n"
+      }
+    },
+    {
+      "id": "agent_6",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 6')\n"
+      }
+    },
+    {
+      "id": "agent_7",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 7')\n"
+      }
+    },
+    {
+      "id": "agent_8",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 8')\n"
+      }
+    },
+    {
+      "id": "agent_9",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 9')\n"
+      }
+    },
+    {
+      "id": "agent_10",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 10')\n"
+      }
+    },
+    {
+      "id": "agent_11",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 11')\n"
+      }
+    },
+    {
+      "id": "agent_12",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 12')\n"
+      }
+    },
+    {
+      "id": "agent_13",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 13')\n"
+      }
+    },
+    {
+      "id": "agent_14",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 14')\n"
+      }
+    },
+    {
+      "id": "agent_15",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 15')\n"
+      }
+    },
+    {
+      "id": "agent_16",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 16')\n"
+      }
+    },
+    {
+      "id": "agent_17",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 17')\n"
+      }
+    },
+    {
+      "id": "agent_18",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 18')\n"
+      }
+    },
+    {
+      "id": "agent_19",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 19')\n"
+      }
+    },
+    {
+      "id": "agent_20",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('hotspot agent 20')\n"
+      }
+    }
+  ],
+  "golden_assertions": {},
+  "gate_config": {
+    "gates": [
+      {
+        "name": "syntax",
+        "command": "python3 -m py_compile *.py",
+        "timeout_seconds": 10
+      },
+      {
+        "name": "unit_tests",
+        "command": "python3 app.py",
+        "timeout_seconds": 10
+      }
+    ]
+  }
+}

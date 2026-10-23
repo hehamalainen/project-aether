@@ -1,0 +1,284 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0 -- .venv/bin/python3.14
+cachedir: .pytest_cache
+rootdir: <REPO_ROOT>
+configfile: pyproject.toml
+plugins: anyio-4.14.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 4 items
+
+tests/aether/test_merge_before_supersede.py::test_semantic_merge_rebase_path FAILED [ 25%]
+tests/aether/test_merge_before_supersede.py::test_non_semantic_policy_isolation PASSED [ 50%]
+tests/aether/test_merge_before_supersede.py::test_rebase_budget_exhaustion FAILED [ 75%]
+tests/aether/test_merge_before_supersede.py::test_gate_timeout_and_evaluation_retry_budget FAILED [100%]
+
+=================================== FAILURES ===================================
+_______________________ test_semantic_merge_rebase_path ________________________
+
+test_db_session = <sqlmodel.orm.session.Session object at 0x10b941160>
+proposal_service = <packages.aether.services.proposal_service.ProposalService object at 0x10b9412b0>
+promotion_engine = <packages.aether.services.promotion_engine.PromotionEngine object at 0x10b941d30>
+tmp_path = PosixPath('/tmp/pytest-of-aether/pytest-554/test_semantic_merge_rebase_pat0')
+
+    @pytest.mark.asyncio
+    async def test_semantic_merge_rebase_path(test_db_session, proposal_service, promotion_engine, tmp_path):
+        # Setup repository
+        repo = Repository(id="repo_sem", name="test_repo_sem", workspace_path=str(tmp_path / "workspace_sem"))
+        test_db_session.add(repo)
+        test_db_session.commit()
+    
+        # 1. First proposal with semantic_merge policy
+        p1_create = ProposalCreate(
+            agent_id="agent_1",
+            change_content="line1_winner\nline2\nline3\nline4\nline5\n",
+            affected_paths=["tools/jsontool.py"],
+            contention_mode=True,
+            contention_group_id="group_sem",
+            contention_policy="semantic_merge"
+        )
+        p1 = await proposal_service.submit_proposal("repo_sem", p1_create)
+    
+        doc_store = DocumentStore("repo_sem", base_path=str(tmp_path / "workspace_sem"))
+        # Populate base head file
+        import os
+        os.makedirs(tmp_path / "workspace_sem/tools", exist_ok=True)
+        with open(tmp_path / "workspace_sem/tools/jsontool.py", "w") as f:
+            f.write("line1\nline2\nline3\nline4\nline5\n")
+    
+        promotions = await promotion_engine.process_pending_proposals("repo_sem", doc_store)
+        assert len(promotions) == 1
+    
+        test_db_session.expire_all()
+        p1_db = proposal_service.get_proposal(p1.proposal_id)
+        assert p1_db.status == ProposalStatus.PROMOTED
+    
+        # 2. Sibling proposal with same contention group ID (losing the race)
+        p2_create = ProposalCreate(
+            agent_id="agent_2",
+            change_content="line1\nline2\nline3\nline4\nline5_loser\n",
+            affected_paths=["tools/jsontool.py"],
+            contention_mode=True,
+            contention_group_id="group_sem",
+            contention_policy="semantic_merge"
+        )
+        p2 = await proposal_service.submit_proposal("repo_sem", p2_create)
+        assert p2.status == ProposalStatus.PENDING
+    
+        # Run promotion. Instead of SUPERSEDED, p2 should transition to REBASING (since max attempts = 2)
+        promotions_2 = await promotion_engine.process_pending_proposals("repo_sem", doc_store)
+        assert len(promotions_2) == 0
+    
+        test_db_session.expire_all()
+        p2_db = proposal_service.get_proposal(p2.proposal_id)
+>       assert p2_db.status == ProposalStatus.REBASING
+E       AssertionError: assert <ProposalStat... 'SUPERSEDED'> == <ProposalStat...G: 'REBASING'>
+E         
+E         - REBASING
+E         + SUPERSEDED
+
+tests/aether/test_merge_before_supersede.py:104: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-07-15 01:45:46 [debug    ] event_published                event_id=evt_af7a90869f1b event_type=proposal.submitted repo_id=repo_sem
+2026-07-15 01:45:46 [info     ] proposal_submitted             agent_id=agent_1 confidence=0.5 paths=['tools/jsontool.py'] proposal_id=prop_cc48f4a158f8 repo_id=repo_sem source=manual
+2026-07-15 01:45:46 [info     ] processing_pending_proposals   pending_count=1 repo_id=repo_sem scan_limit=320
+2026-07-15 01:45:46 [debug    ] event_published                event_id=evt_53b41d63ea68 event_type=snapshot.created repo_id=repo_sem
+2026-07-15 01:45:46 [info     ] snapshot_created               content_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 file_count=0 repo_id=repo_sem snapshot_id=snap_7276199ea634 total_bytes=0
+2026-07-15 01:45:46 [debug    ] event_published                event_id=evt_d005fed0eb3d event_type=gate.started repo_id=repo_sem
+2026-07-15 01:45:46 [info     ] gate_started                   command="echo 'build skipped'" gate_name=build snapshot_id=snap_7276199ea634
+2026-07-15 01:45:46 [debug    ] event_published                event_id=evt_3d7835e101ad event_type=gate.completed repo_id=repo_sem
+2026-07-15 01:45:46 [info     ] gate_completed                 duration_ms=8 exit_code=0 gate_name=build snapshot_id=snap_7276199ea634 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_be9c7eb594a7 event_type=gate.started repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'tests skipped'" gate_name=unit_tests snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_dfd22d91610d event_type=gate.completed repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=7 exit_code=0 gate_name=unit_tests snapshot_id=snap_7276199ea634 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_5a1d95bf3164 event_type=gate.started repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'syntax check skipped'" gate_name=syntax snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_45b93269ad63 event_type=gate.started repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'lint skipped'" gate_name=lint snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_47b79516348f event_type=gate.completed repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=7 exit_code=0 gate_name=syntax snapshot_id=snap_7276199ea634 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_468654e8cb31 event_type=gate.completed repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=18 exit_code=0 gate_name=lint snapshot_id=snap_7276199ea634 status=PASS
+2026-07-15 01:45:47 [debug    ] agent_trust_calculated         agent_id=batch combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-15 01:45:47 [debug    ] agent_trust_calculated         agent_id=agent_1 combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-15 01:45:47 [info     ] head_updated                   head_id=head_c87c52bc76a5 repo_id=repo_sem sequence=1 snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_01ab53653839 event_type=proposal.promoted repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] proposal_status_updated        new_status=PROMOTED old_status=PENDING proposal_id=prop_cc48f4a158f8 reason='{"event_reason": "contention_winner_promoted", "contention_group_id": "group_sem", "contention_policy": "semantic_merge", "previous_winner_proposal_id": null, "target_paths": ["tools/jsontool.py"]}'
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_3bc11ffea61b event_type=head.updated repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] promotion_completed            new_head_id=head_c87c52bc76a5 new_sequence=1 phase_timing={'record_commit_ms': 1.253708265721798, 'head_commit_ms': 7.814875338226557, 'status_phase_ms': 2.3240000009536743, 'trust_commit_ms': 0.03804219886660576, 'publish_ms': 0.4009581170976162, 'commit_total_ms': 11.430625803768635, 'total_ms': 17.14400015771389} promotion_id=prom_e878b8b48a64 proposals=['prop_cc48f4a158f8'] repo_id=repo_sem score=0.8500000000000001
+2026-07-15 01:45:47 [info     ] promotion_iteration_timing     conflict_sets_processed=0 conflict_sets_seen=0 conflict_sets_with_candidate=0 pending_count=1 promotions=1 repo_id=repo_sem timing={'select_ms': 1.9631669856607914, 'evaluate_ms': 66.90875021740794, 'clone_ms': 0.02508377656340599, 'snapshot_ms': 2.10304232314229, 'snapshot_hash_ms': 0.1772083342075348, 'snapshot_materialize_ms': 0.16174977645277977, 'snapshot_db_commit_ms': 0.8645420894026756, 'snapshot_publish_ms': 0.1372080296278, 'gates_ms': 59.74395899102092, 'commit_ms': 11.430625803768635, 'promote_ms': 17.23624998703599, 'processed_conflict_sets': 0.0, 'processed_non_conflicting_batches': 1.0, 'processed_non_conflicting_proposals': 1.0, 'processed_conflicting_promotions': 0.0, 'proposals_scanned_count': 1.0, 'candidates_built_count': 1.0, 'promotions_created_count': 1.0, 'proposals_promoted_count': 1.0, 'hit_time_cap_count': 0.0, 'hit_batch_cap_count': 0.0, 'conflict_sets_seen_count': 0.0, 'conflict_sets_no_candidate_count': 0.0, 'external_commit_abort_count': 0.0, 'snapshot_phase_repo_lookup_ms': 0.25141704827547073, 'snapshot_phase_repo_lookup_identity_map_size': 2.0, 'snapshot_phase_cache_lookup_ms': 0.11454103514552116, 'snapshot_phase_cache_lookup_identity_map_size': 2.0, 'snapshot_phase_base_snapshot_resolution_ms': 0.001000240445137024, 'snapshot_phase_base_snapshot_resolution_identity_map_size': 2.0, 'snapshot_phase_changed_path_query_ms': 0.0016666017472743988, 'snapshot_phase_changed_path_query_identity_map_size': 2.0, 'snapshot_phase_delta_materialization_ms': 0.15137484297156334, 'snapshot_phase_delta_materialization_identity_map_size': 2.0, 'snapshot_phase_commit_ms': 0.8645420894026756, 'snapshot_phase_commit_identity_map_size': 2.0, 'snapshot_phase_publish_ms': 0.1372080296278, 'snapshot_phase_publish_identity_map_size': 2.0, 'total_ms': 87.35266607254744}
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_c0e6068f4154 event_type=proposal.submitted repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] proposal_submitted             agent_id=agent_2 confidence=0.5 paths=['tools/jsontool.py'] proposal_id=prop_794f5a28dc9a repo_id=repo_sem source=manual
+2026-07-15 01:45:47 [info     ] processing_pending_proposals   pending_count=1 repo_id=repo_sem scan_limit=320
+2026-07-15 01:45:47 [debug    ] snapshot_cache_hit             content_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 repo_id=repo_sem snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_16c469a2b82a event_type=gate.started repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'build skipped'" gate_name=build snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_aeb36c9489a4 event_type=gate.completed repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=5 exit_code=0 gate_name=build snapshot_id=snap_7276199ea634 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_59563a093742 event_type=gate.started repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'tests skipped'" gate_name=unit_tests snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_d415a1b39978 event_type=gate.completed repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=5 exit_code=0 gate_name=unit_tests snapshot_id=snap_7276199ea634 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_d85a9b289402 event_type=gate.started repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'syntax check skipped'" gate_name=syntax snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_9cda1aa4f827 event_type=gate.started repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'lint skipped'" gate_name=lint snapshot_id=snap_7276199ea634
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_f4ba114bc50f event_type=gate.completed repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=13 exit_code=0 gate_name=syntax snapshot_id=snap_7276199ea634 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_3df45e3593bb event_type=gate.completed repo_id=repo_sem
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=10 exit_code=0 gate_name=lint snapshot_id=snap_7276199ea634 status=PASS
+2026-07-15 01:45:47 [debug    ] agent_trust_calculated         agent_id=batch combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-15 01:45:47 [info     ] temporal_contention_winner_exists_aborting_promotion proposal_ids=['prop_794f5a28dc9a'] winner_id=prop_cc48f4a158f8
+2026-07-15 01:45:47 [info     ] proposal_status_updated        new_status=SUPERSEDED old_status=PENDING proposal_id=prop_794f5a28dc9a reason='{"event_reason": "temporal_semantic_conflict", "contention_group_id": "group_sem", "contention_policy": "semantic_merge", "winner_proposal_id": "prop_cc48f4a158f8", "target_paths": ["tools/jsontool.py"]}'
+2026-07-15 01:45:47 [info     ] contention_winner_exists_skipping_promotion_batch
+2026-07-15 01:45:47 [info     ] promotion_iteration_timing     conflict_sets_processed=0 conflict_sets_seen=0 conflict_sets_with_candidate=0 pending_count=1 promotions=0 repo_id=repo_sem timing={'select_ms': 0.47445809468626976, 'evaluate_ms': 36.10379109159112, 'clone_ms': 0.00966666266322136, 'snapshot_ms': 0.35420898348093033, 'snapshot_hash_ms': 0.13900035992264748, 'snapshot_materialize_ms': 0.0, 'snapshot_db_commit_ms': 0.0, 'snapshot_publish_ms': 0.0, 'gates_ms': 33.61308295279741, 'commit_ms': 0.0, 'promote_ms': 0.0, 'processed_conflict_sets': 0.0, 'processed_non_conflicting_batches': 1.0, 'processed_non_conflicting_proposals': 0.0, 'processed_conflicting_promotions': 0.0, 'proposals_scanned_count': 1.0, 'candidates_built_count': 1.0, 'promotions_created_count': 0.0, 'proposals_promoted_count': 0.0, 'hit_time_cap_count': 0.0, 'hit_batch_cap_count': 0.0, 'conflict_sets_seen_count': 0.0, 'conflict_sets_no_candidate_count': 0.0, 'external_commit_abort_count': 0.0, 'snapshot_phase_repo_lookup_ms': 0.041750259697437286, 'snapshot_phase_repo_lookup_identity_map_size': 4.0, 'snapshot_phase_cache_lookup_ms': 0.10624993592500687, 'snapshot_phase_cache_lookup_identity_map_size': 4.0, 'total_ms': 39.51891604810953}
+________________________ test_rebase_budget_exhaustion _________________________
+
+test_db_session = <sqlmodel.orm.session.Session object at 0x10bdec7d0>
+proposal_service = <packages.aether.services.proposal_service.ProposalService object at 0x10bdec690>
+promotion_engine = <packages.aether.services.promotion_engine.PromotionEngine object at 0x10bdecb90>
+tmp_path = PosixPath('/tmp/pytest-of-aether/pytest-554/test_rebase_budget_exhaustion0')
+
+    @pytest.mark.asyncio
+    async def test_rebase_budget_exhaustion(test_db_session, proposal_service, promotion_engine, tmp_path):
+        repo = Repository(id="repo_exh", name="test_repo_exh", workspace_path=str(tmp_path / "workspace_exh"), max_rebase_attempts=1)
+        test_db_session.add(repo)
+        test_db_session.commit()
+    
+        _p1 = await proposal_service.submit_proposal("repo_exh", ProposalCreate(
+            agent_id="agent_1", change_content="print('1')", affected_paths=["a.py"],
+            contention_mode=True, contention_group_id="group_exh", contention_policy="semantic_merge"
+        ))
+    
+        doc_store = DocumentStore("repo_exh", base_path=str(tmp_path / "workspace_exh"))
+        await promotion_engine.process_pending_proposals("repo_exh", doc_store)
+    
+        p2 = await proposal_service.submit_proposal("repo_exh", ProposalCreate(
+            agent_id="agent_2", change_content="print('2')", affected_paths=["a.py"],
+            contention_mode=True, contention_group_id="group_exh", contention_policy="semantic_merge"
+        ))
+    
+        # First contention loss: rebase_attempts becomes 1. Max allowed is 1, so it transitions to REBASING.
+        await promotion_engine.process_pending_proposals("repo_exh", doc_store)
+        test_db_session.expire_all()
+        p2_db = proposal_service.get_proposal(p2.proposal_id)
+>       assert p2_db.status == ProposalStatus.REBASING
+E       AssertionError: assert <ProposalStat... 'SUPERSEDED'> == <ProposalStat...G: 'REBASING'>
+E         
+E         - REBASING
+E         + SUPERSEDED
+
+tests/aether/test_merge_before_supersede.py:198: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_f762b835eb50 event_type=proposal.submitted repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] proposal_submitted             agent_id=agent_1 confidence=0.5 paths=['a.py'] proposal_id=prop_2c0fc4b6a44c repo_id=repo_exh source=manual
+2026-07-15 01:45:47 [info     ] processing_pending_proposals   pending_count=1 repo_id=repo_exh scan_limit=320
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_8224289a2710 event_type=snapshot.created repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] snapshot_created               content_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 file_count=0 repo_id=repo_exh snapshot_id=snap_c1bf6a0fe570 total_bytes=0
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_9103bde91cdc event_type=gate.started repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'build skipped'" gate_name=build snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_ead6ba306374 event_type=gate.completed repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=9 exit_code=0 gate_name=build snapshot_id=snap_c1bf6a0fe570 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_d1efb7a25822 event_type=gate.started repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'tests skipped'" gate_name=unit_tests snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_a29321e8cd65 event_type=gate.completed repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=5 exit_code=0 gate_name=unit_tests snapshot_id=snap_c1bf6a0fe570 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_0d9c0a932d60 event_type=gate.started repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'syntax check skipped'" gate_name=syntax snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_810ca9d225af event_type=gate.started repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'lint skipped'" gate_name=lint snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_9086ccb971ba event_type=gate.completed repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=7 exit_code=0 gate_name=syntax snapshot_id=snap_c1bf6a0fe570 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_90032d979b92 event_type=gate.completed repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=4 exit_code=0 gate_name=lint snapshot_id=snap_c1bf6a0fe570 status=PASS
+2026-07-15 01:45:47 [debug    ] agent_trust_calculated         agent_id=batch combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-15 01:45:47 [debug    ] agent_trust_calculated         agent_id=agent_1 combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-15 01:45:47 [info     ] head_updated                   head_id=head_472f96ffb35a repo_id=repo_exh sequence=1 snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_9aafc83505ae event_type=proposal.promoted repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] proposal_status_updated        new_status=PROMOTED old_status=PENDING proposal_id=prop_2c0fc4b6a44c reason='{"event_reason": "contention_winner_promoted", "contention_group_id": "group_exh", "contention_policy": "semantic_merge", "previous_winner_proposal_id": null, "target_paths": ["a.py"]}'
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_c92c77c7b30c event_type=head.updated repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] promotion_completed            new_head_id=head_472f96ffb35a new_sequence=1 phase_timing={'record_commit_ms': 0.5241669714450836, 'head_commit_ms': 3.406291827559471, 'status_phase_ms': 1.9344999454915524, 'trust_commit_ms': 0.03600027412176132, 'publish_ms': 0.4148329608142376, 'commit_total_ms': 5.900959018617868, 'total_ms': 9.330791886895895} promotion_id=prom_1942962bc656 proposals=['prop_2c0fc4b6a44c'] repo_id=repo_exh score=0.8500000000000001
+2026-07-15 01:45:47 [info     ] promotion_iteration_timing     conflict_sets_processed=0 conflict_sets_seen=0 conflict_sets_with_candidate=0 pending_count=1 promotions=1 repo_id=repo_exh timing={'select_ms': 1.2504584155976772, 'evaluate_ms': 39.53333292156458, 'clone_ms': 0.01091696321964264, 'snapshot_ms': 1.2267082929611206, 'snapshot_hash_ms': 0.1471671275794506, 'snapshot_materialize_ms': 0.1260410062968731, 'snapshot_db_commit_ms': 0.3748326562345028, 'snapshot_publish_ms': 0.08116709068417549, 'gates_ms': 34.9053330719471, 'commit_ms': 5.900959018617868, 'promote_ms': 9.405250195413828, 'processed_conflict_sets': 0.0, 'processed_non_conflicting_batches': 1.0, 'processed_non_conflicting_proposals': 1.0, 'processed_conflicting_promotions': 0.0, 'proposals_scanned_count': 1.0, 'candidates_built_count': 1.0, 'promotions_created_count': 1.0, 'proposals_promoted_count': 1.0, 'hit_time_cap_count': 0.0, 'hit_batch_cap_count': 0.0, 'conflict_sets_seen_count': 0.0, 'conflict_sets_no_candidate_count': 0.0, 'external_commit_abort_count': 0.0, 'snapshot_phase_repo_lookup_ms': 0.08520809933543205, 'snapshot_phase_repo_lookup_identity_map_size': 2.0, 'snapshot_phase_cache_lookup_ms': 0.1226658932864666, 'snapshot_phase_cache_lookup_identity_map_size': 2.0, 'snapshot_phase_base_snapshot_resolution_ms': 0.0006672926247119904, 'snapshot_phase_base_snapshot_resolution_identity_map_size': 2.0, 'snapshot_phase_changed_path_query_ms': 0.0009578652679920197, 'snapshot_phase_changed_path_query_identity_map_size': 2.0, 'snapshot_phase_delta_materialization_ms': 0.11987518519163132, 'snapshot_phase_delta_materialization_identity_map_size': 2.0, 'snapshot_phase_commit_ms': 0.3748326562345028, 'snapshot_phase_commit_identity_map_size': 2.0, 'snapshot_phase_publish_ms': 0.08116709068417549, 'snapshot_phase_publish_identity_map_size': 2.0, 'total_ms': 50.875416956841946}
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_625918708469 event_type=proposal.submitted repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] proposal_submitted             agent_id=agent_2 confidence=0.5 paths=['a.py'] proposal_id=prop_9e42895818dd repo_id=repo_exh source=manual
+2026-07-15 01:45:47 [info     ] processing_pending_proposals   pending_count=1 repo_id=repo_exh scan_limit=320
+2026-07-15 01:45:47 [debug    ] snapshot_cache_hit             content_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 repo_id=repo_exh snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_5cb36bc2f6aa event_type=gate.started repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'build skipped'" gate_name=build snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_56daf1e79cc7 event_type=gate.completed repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=6 exit_code=0 gate_name=build snapshot_id=snap_c1bf6a0fe570 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_d2eee91483bd event_type=gate.started repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'tests skipped'" gate_name=unit_tests snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_530873b0deb8 event_type=gate.completed repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=5 exit_code=0 gate_name=unit_tests snapshot_id=snap_c1bf6a0fe570 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_46a2409b222e event_type=gate.started repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'syntax check skipped'" gate_name=syntax snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_186c48d8a14d event_type=gate.started repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_started                   command="echo 'lint skipped'" gate_name=lint snapshot_id=snap_c1bf6a0fe570
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_7f817135975c event_type=gate.completed repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=10 exit_code=0 gate_name=syntax snapshot_id=snap_c1bf6a0fe570 status=PASS
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_5e168b70711d event_type=gate.completed repo_id=repo_exh
+2026-07-15 01:45:47 [info     ] gate_completed                 duration_ms=8 exit_code=0 gate_name=lint snapshot_id=snap_c1bf6a0fe570 status=PASS
+2026-07-15 01:45:47 [debug    ] agent_trust_calculated         agent_id=batch combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-15 01:45:47 [info     ] temporal_contention_winner_exists_aborting_promotion proposal_ids=['prop_9e42895818dd'] winner_id=prop_2c0fc4b6a44c
+2026-07-15 01:45:47 [info     ] proposal_status_updated        new_status=SUPERSEDED old_status=PENDING proposal_id=prop_9e42895818dd reason='{"event_reason": "temporal_semantic_conflict", "contention_group_id": "group_exh", "contention_policy": "semantic_merge", "winner_proposal_id": "prop_2c0fc4b6a44c", "target_paths": ["a.py"]}'
+2026-07-15 01:45:47 [info     ] contention_winner_exists_skipping_promotion_batch
+2026-07-15 01:45:47 [info     ] promotion_iteration_timing     conflict_sets_processed=0 conflict_sets_seen=0 conflict_sets_with_candidate=0 pending_count=1 promotions=0 repo_id=repo_exh timing={'select_ms': 0.48966705799102783, 'evaluate_ms': 32.64574985951185, 'clone_ms': 0.0077500008046627045, 'snapshot_ms': 0.30566565692424774, 'snapshot_hash_ms': 0.1300843432545662, 'snapshot_materialize_ms': 0.0, 'snapshot_db_commit_ms': 0.0, 'snapshot_publish_ms': 0.0, 'gates_ms': 30.593625269830227, 'commit_ms': 0.0, 'promote_ms': 0.0, 'processed_conflict_sets': 0.0, 'processed_non_conflicting_batches': 1.0, 'processed_non_conflicting_proposals': 0.0, 'processed_conflicting_promotions': 0.0, 'proposals_scanned_count': 1.0, 'candidates_built_count': 1.0, 'promotions_created_count': 0.0, 'proposals_promoted_count': 0.0, 'hit_time_cap_count': 0.0, 'hit_batch_cap_count': 0.0, 'conflict_sets_seen_count': 0.0, 'conflict_sets_no_candidate_count': 0.0, 'external_commit_abort_count': 0.0, 'snapshot_phase_repo_lookup_ms': 0.03679189831018448, 'snapshot_phase_repo_lookup_identity_map_size': 2.0, 'snapshot_phase_cache_lookup_ms': 0.09454088285565376, 'snapshot_phase_cache_lookup_identity_map_size': 2.0, 'total_ms': 36.06979176402092}
+________________ test_gate_timeout_and_evaluation_retry_budget _________________
+
+test_db_session = <sqlmodel.orm.session.Session object at 0x10bd6b230>
+proposal_service = <packages.aether.services.proposal_service.ProposalService object at 0x10bd6a780>
+promotion_engine = <packages.aether.services.promotion_engine.PromotionEngine object at 0x10c05c3e0>
+tmp_path = PosixPath('/tmp/pytest-of-aether/pytest-554/test_gate_timeout_and_evaluati0')
+
+    @pytest.mark.asyncio
+    async def test_gate_timeout_and_evaluation_retry_budget(test_db_session, proposal_service, promotion_engine, tmp_path):
+        repo = Repository(id="repo_err", name="test_repo_err", workspace_path=str(tmp_path / "workspace_err"), max_rebase_attempts=1)
+        test_db_session.add(repo)
+        test_db_session.commit()
+    
+        p1 = await proposal_service.submit_proposal("repo_err", ProposalCreate(
+            agent_id="agent_1", change_content="print('1')", affected_paths=["a.py"],
+            contention_mode=True, contention_group_id="group_err", contention_policy="semantic_merge"
+        ))
+        doc_store = DocumentStore("repo_err", base_path=str(tmp_path / "workspace_err"))
+    
+        # Force a GateTimeoutError during evaluation by mocking run_all_gates
+        async def mock_run_all_gates(*args, **kwargs):
+            raise GateTimeoutError("Mock Timeout")
+        promotion_engine.gate_runner.run_all_gates = mock_run_all_gates
+    
+        # Run evaluation
+        await promotion_engine.process_pending_proposals("repo_err", doc_store)
+        test_db_session.expire_all()
+        p1_db = proposal_service.get_proposal(p1.proposal_id)
+    
+        # Within budget (rebase_attempts = 1 <= max_rebase_attempts = 1): should transition to REBASING
+>       assert p1_db.status == ProposalStatus.REBASING
+E       AssertionError: assert <ProposalStat...NG: 'PENDING'> == <ProposalStat...G: 'REBASING'>
+E         
+E         - REBASING
+E         + PENDING
+
+tests/aether/test_merge_before_supersede.py:239: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_16a7acc343e0 event_type=proposal.submitted repo_id=repo_err
+2026-07-15 01:45:47 [info     ] proposal_submitted             agent_id=agent_1 confidence=0.5 paths=['a.py'] proposal_id=prop_f54b9d364bb3 repo_id=repo_err source=manual
+2026-07-15 01:45:47 [info     ] processing_pending_proposals   pending_count=1 repo_id=repo_err scan_limit=320
+2026-07-15 01:45:47 [debug    ] event_published                event_id=evt_974649f5ce90 event_type=snapshot.created repo_id=repo_err
+2026-07-15 01:45:47 [info     ] snapshot_created               content_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 file_count=0 repo_id=repo_err snapshot_id=snap_806cf5fac074 total_bytes=0
+2026-07-15 01:45:47 [info     ] promotion_iteration_timing     conflict_sets_processed=0 conflict_sets_seen=0 conflict_sets_with_candidate=0 pending_count=1 promotions=0 repo_id=repo_err timing={'select_ms': 1.1890418827533722, 'evaluate_ms': 0.0, 'clone_ms': 0.0, 'snapshot_ms': 0.0, 'snapshot_hash_ms': 0.0, 'snapshot_materialize_ms': 0.0, 'snapshot_db_commit_ms': 0.0, 'snapshot_publish_ms': 0.0, 'gates_ms': 0.0, 'commit_ms': 0.0, 'promote_ms': 0.0, 'processed_conflict_sets': 0.0, 'processed_non_conflicting_batches': 1.0, 'processed_non_conflicting_proposals': 0.0, 'processed_conflicting_promotions': 0.0, 'proposals_scanned_count': 1.0, 'candidates_built_count': 0.0, 'promotions_created_count': 0.0, 'proposals_promoted_count': 0.0, 'hit_time_cap_count': 0.0, 'hit_batch_cap_count': 0.0, 'conflict_sets_seen_count': 0.0, 'conflict_sets_no_candidate_count': 0.0, 'external_commit_abort_count': 0.0, 'total_ms': 4.815707914531231}
+=============================== warnings summary ===============================
+tests/aether/test_merge_before_supersede.py::test_semantic_merge_rebase_path
+tests/aether/test_merge_before_supersede.py::test_non_semantic_policy_isolation
+tests/aether/test_merge_before_supersede.py::test_rebase_budget_exhaustion
+tests/aether/test_merge_before_supersede.py::test_gate_timeout_and_evaluation_retry_budget
+  .venv/lib/python3.14/site-packages/sqlalchemy/engine/default.py:952: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/aether/test_merge_before_supersede.py::test_semantic_merge_rebase_path
+FAILED tests/aether/test_merge_before_supersede.py::test_rebase_budget_exhaustion
+FAILED tests/aether/test_merge_before_supersede.py::test_gate_timeout_and_evaluation_retry_budget
+=================== 3 failed, 1 passed, 4 warnings in 0.88s ====================

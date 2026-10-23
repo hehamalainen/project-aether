@@ -1,0 +1,53 @@
+{
+  "scenario": "class2_obvious_reject",
+  "expected_terminal_counts": {
+    "QUARANTINED": 2
+  },
+  "expected_outcome": "REJECTED",
+  "expected_reason": "synthesis_failure",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('agent 1')\n"
+      }
+    },
+    {
+      "id": "agent_2",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('agent 2')\n"
+      }
+    }
+  ],
+  "golden_assertions": {
+    "app.py": {
+      "must_contain": [],
+      "must_not_contain": [
+        "agent 1",
+        "agent 2"
+      ]
+    }
+  },
+  "gate_config": {
+    "gates": [
+      {
+        "name": "syntax",
+        "command": "python3 -m py_compile *.py",
+        "timeout_seconds": 10
+      },
+      {
+        "name": "unit_tests",
+        "command": "python3 app.py",
+        "timeout_seconds": 10
+      }
+    ]
+  }
+}

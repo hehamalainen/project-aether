@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "path_matcher": "packages/aether/services/proposal_service.py",
+      "test_targets": [
+        "tests/aether/test_proposal_service.py"
+      ],
+      "lint_targets": [
+        "packages/aether/services/proposal_service.py"
+      ],
+      "typecheck_targets": [
+        "packages/aether/services/proposal_service.py"
+      ]
+    },
+    {
+      "path_matcher": "packages/aether/services/promotion_engine.py",
+      "test_targets": [
+        "tests/aether/test_promotion_engine.py"
+      ],
+      "lint_targets": [
+        "packages/aether/services/promotion_engine.py"
+      ],
+      "typecheck_targets": [
+        "packages/aether/services/promotion_engine.py"
+      ]
+    },
+    {
+      "path_matcher": "packages/aether/services/gate_runner.py",
+      "test_targets": [
+        "tests/aether/test_tripartite_gate.py"
+      ],
+      "lint_targets": [
+        "packages/aether/services/gate_runner.py"
+      ],
+      "typecheck_targets": [
+        "packages/aether/services/gate_runner.py"
+      ]
+    }
+  ]
+}

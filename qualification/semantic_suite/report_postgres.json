@@ -1,0 +1,92 @@
+{
+  "db_profile": "postgres",
+  "model_configuration": "simulated-synthesis-worker",
+  "git_branch": "feat/python-semantic-prototype",
+  "git_commit_sha": "ab57a3e7a625776d9db69f8c1c932064307fa2cb",
+  "cases": [
+    {
+      "case_name": "class_member_collisions",
+      "status": "pass",
+      "duration_seconds": 0.10921604232862592,
+      "proposals": [
+        {
+          "proposal_id": "p1_1",
+          "final_status": "PROMOTED",
+          "provenance_event_type": null,
+          "provenance_event_reason": null,
+          "rebase_attempts": 0
+        },
+        {
+          "proposal_id": "p1_2",
+          "final_status": "PROMOTED",
+          "provenance_event_type": "structural_merge",
+          "provenance_event_reason": "structural_merge_applied",
+          "rebase_attempts": 0
+        }
+      ]
+    },
+    {
+      "case_name": "ast_edit_block_overlaps",
+      "status": "pass",
+      "duration_seconds": 0.09730829205363989,
+      "proposals": [
+        {
+          "proposal_id": "p2_1",
+          "final_status": "PROMOTED",
+          "provenance_event_type": null,
+          "provenance_event_reason": null,
+          "rebase_attempts": 0
+        },
+        {
+          "proposal_id": "p2_2",
+          "final_status": "PROMOTED",
+          "provenance_event_type": "structural_merge",
+          "provenance_event_reason": "structural_merge_applied",
+          "rebase_attempts": 0
+        }
+      ]
+    },
+    {
+      "case_name": "synthesis_fallback_merges",
+      "status": "pass",
+      "duration_seconds": 0.43740116665139794,
+      "proposals": [
+        {
+          "proposal_id": "p3_1",
+          "final_status": "PROMOTED",
+          "provenance_event_type": null,
+          "provenance_event_reason": null,
+          "rebase_attempts": 0
+        },
+        {
+          "proposal_id": "p3_2",
+          "final_status": "PROMOTED",
+          "provenance_event_type": "synthesis_merge",
+          "provenance_event_reason": "synthesis_merge_applied",
+          "rebase_attempts": 0
+        }
+      ]
+    },
+    {
+      "case_name": "negative_control",
+      "status": "pass",
+      "duration_seconds": 0.07944691739976406,
+      "proposals": [
+        {
+          "proposal_id": "p4_1",
+          "final_status": "PROMOTED",
+          "provenance_event_type": null,
+          "provenance_event_reason": null,
+          "rebase_attempts": 0
+        },
+        {
+          "proposal_id": "p4_2",
+          "final_status": "SUPERSEDED",
+          "provenance_event_type": "status_superseded",
+          "provenance_event_reason": "rebase_budget_exhaustion",
+          "rebase_attempts": 2
+        }
+      ]
+    }
+  ]
+}

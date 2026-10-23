@@ -1,0 +1,37 @@
+{
+  "scenario": "class1",
+  "expected_terminal_counts": {
+    "PROMOTED": 2
+  },
+  "expected_outcome": "PROMOTED",
+  "expected_reason": "structural_merge",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "user.py",
+        "affected_symbols": ["user.py::CLASS:User::FUNC:get_role"],
+        "content": "class User:\n    def __init__(self):\n        self.id = 1\n        self.name = \"Alice\"\n        self.role = \"user\"\n\n    def get_role(self):\n        return self.role\n"
+      }
+    },
+    {
+      "id": "agent_2",
+      "proposal": {
+        "path": "user.py",
+        "affected_symbols": ["user.py::CLASS:User::FUNC:is_admin"],
+        "content": "class User:\n    def __init__(self):\n        self.id = 1\n        self.name = \"Alice\"\n        self.role = \"user\"\n\n    def is_admin(self):\n        return self.role == \"admin\"\n"
+      }
+    }
+  ],
+  "golden_assertions": {
+    "user.py": {
+      "must_contain": [
+        "def get_role(self):",
+        "def is_admin(self):"
+      ],
+      "must_not_contain": [
+        "CONFLICT"
+      ]
+    }
+  }
+}

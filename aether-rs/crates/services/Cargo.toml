@@ -1,0 +1,21 @@
+[package]
+name = "services"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["db-sqlite"]
+db-sqlite = []
+db-postgres = []
+
+[dependencies]
+models = { path = "../models" }
+crdt = { path = "../crdt" }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

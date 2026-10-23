@@ -1,0 +1,118 @@
+{
+  "db_profile": "sqlite",
+  "model_configuration": "simulated-synthesis-worker",
+  "git_branch": "feat/python-semantic-prototype",
+  "git_commit_sha": "024163b8a3ebf951923a8e6899051af2793f1748",
+  "command": {
+    "interpreter": ".venv/bin/python",
+    "script_path": "qualification/semantic_suite/run.py",
+    "arguments": [
+      "qualification/semantic_suite/run.py",
+      "--db-profile",
+      "sqlite",
+      "--output-dir",
+      "/tmp/aether_mx_remediation/run_20260718T172555Z/green"
+    ],
+    "cwd": "<REPO_ROOT>"
+  },
+  "started_at": "2026-07-18T14:27:46.476030+00:00",
+  "ended_at": "2026-07-18T14:27:47.017628+00:00",
+  "duration_seconds": 0.5415809154510498,
+  "runtime_info": {
+    "python_version": "3.14.3 (main, Feb  3 2026, 15:32:20) [Clang 17.0.0 (clang-1700.6.3.2)]",
+    "platform": "darwin",
+    "env_vars": {
+      "AETHER_SEMANTIC_MERGE_ENABLED": "",
+      "AETHER_SYNTHESIS_WORKER_ENABLED": "",
+      "AETHER_SERVER_PROFILE": ""
+    }
+  },
+  "clean_at_start": true,
+  "cases": [
+    {
+      "case_name": "class_member_collisions",
+      "status": "pass",
+      "duration_seconds": 0.08655537500453647,
+      "proposals": [
+        {
+          "proposal_id": "p1_1",
+          "final_status": "PROMOTED",
+          "provenance_event_type": null,
+          "provenance_event_reason": null,
+          "rebase_attempts": 0
+        },
+        {
+          "proposal_id": "p1_2",
+          "final_status": "PROMOTED",
+          "provenance_event_type": "structural_merge",
+          "provenance_event_reason": "structural_merge_applied",
+          "rebase_attempts": 0
+        }
+      ]
+    },
+    {
+      "case_name": "ast_edit_block_overlaps",
+      "status": "pass",
+      "duration_seconds": 0.044649542003753595,
+      "proposals": [
+        {
+          "proposal_id": "p2_1",
+          "final_status": "PROMOTED",
+          "provenance_event_type": null,
+          "provenance_event_reason": null,
+          "rebase_attempts": 0
+        },
+        {
+          "proposal_id": "p2_2",
+          "final_status": "PROMOTED",
+          "provenance_event_type": "structural_merge",
+          "provenance_event_reason": "structural_merge_applied",
+          "rebase_attempts": 0
+        }
+      ]
+    },
+    {
+      "case_name": "synthesis_fallback_merges",
+      "status": "pass",
+      "duration_seconds": 0.3211218340002233,
+      "proposals": [
+        {
+          "proposal_id": "p3_1",
+          "final_status": "PROMOTED",
+          "provenance_event_type": null,
+          "provenance_event_reason": null,
+          "rebase_attempts": 0
+        },
+        {
+          "proposal_id": "p3_2",
+          "final_status": "PROMOTED",
+          "provenance_event_type": "synthesis_merge",
+          "provenance_event_reason": "synthesis_merge_applied",
+          "rebase_attempts": 0
+        }
+      ]
+    },
+    {
+      "case_name": "negative_control",
+      "status": "pass",
+      "duration_seconds": 0.0350239170002169,
+      "proposals": [
+        {
+          "proposal_id": "p4_1",
+          "final_status": "PROMOTED",
+          "provenance_event_type": null,
+          "provenance_event_reason": null,
+          "rebase_attempts": 0
+        },
+        {
+          "proposal_id": "p4_2",
+          "final_status": "SUPERSEDED",
+          "provenance_event_type": "status_superseded",
+          "provenance_event_reason": "rebase_budget_exhaustion",
+          "rebase_attempts": 2
+        }
+      ]
+    }
+  ],
+  "runner_config_fingerprint": "2940e1f50f8b01421fe5def76cdc0388c61944fa65e7b5336cfbdbfc8ee89a90"
+}

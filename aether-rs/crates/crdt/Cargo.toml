@@ -1,0 +1,24 @@
+[package]
+name = "crdt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tree-sitter = "0.26.8"
+tree-sitter-python = "0.25.0"
+models = { path = "../models" }
+diffy = "0.5.0"
+walkdir = "2.3.3"
+wasmi = { workspace = true }
+tokio = { workspace = true }
+regex = "1.10"
+
+
+
+[dev-dependencies]
+proptest = "1.11.0"
+rand = "0.8"
+chrono = { workspace = true }

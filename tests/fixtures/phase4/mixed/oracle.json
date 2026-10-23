@@ -1,0 +1,226 @@
+{
+  "scenario": "mixed",
+  "expected_terminal_counts": {
+    "PROMOTED": 2,
+    "SUPERSEDED": 8
+  },
+  "expected_outcome": "PROMOTED",
+  "expected_reason": "synthesis_success",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 1')\n"
+      }
+    },
+    {
+      "id": "agent_2",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 2')\n"
+      }
+    },
+    {
+      "id": "agent_3",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 3')\n"
+      }
+    },
+    {
+      "id": "agent_4",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 4')\n"
+      }
+    },
+    {
+      "id": "agent_5",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 5')\n"
+      }
+    },
+    {
+      "id": "agent_6",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 6')\n"
+      }
+    },
+    {
+      "id": "agent_7",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 7')\n"
+      }
+    },
+    {
+      "id": "agent_8",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 8')\n"
+      }
+    },
+    {
+      "id": "agent_9",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 9')\n"
+      }
+    },
+    {
+      "id": "agent_10",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 10')\n"
+      }
+    },
+    {
+      "id": "agent_11",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 11')\n"
+      }
+    },
+    {
+      "id": "agent_12",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 12')\n"
+      }
+    },
+    {
+      "id": "agent_13",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 13')\n"
+      }
+    },
+    {
+      "id": "agent_14",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 14')\n"
+      }
+    },
+    {
+      "id": "agent_15",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 15')\n"
+      }
+    },
+    {
+      "id": "agent_16",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 16')\n"
+      }
+    },
+    {
+      "id": "agent_17",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 17')\n"
+      }
+    },
+    {
+      "id": "agent_18",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 18')\n"
+      }
+    },
+    {
+      "id": "agent_19",
+      "proposal": {
+        "path": "utils.py",
+        "affected_symbols": [
+          "utils.py::FUNC:helper"
+        ],
+        "content": "def helper():\n    print('mixed agent 19')\n"
+      }
+    },
+    {
+      "id": "agent_20",
+      "proposal": {
+        "path": "app.py",
+        "affected_symbols": [
+          "app.py::FUNC:start"
+        ],
+        "content": "def start():\n    print('mixed agent 20')\n"
+      }
+    }
+  ],
+  "golden_assertions": {},
+  "gate_config": {
+    "gates": [
+      {
+        "name": "syntax",
+        "command": "python3 -m py_compile *.py",
+        "timeout_seconds": 10
+      },
+      {
+        "name": "unit_tests",
+        "command": "python3 app.py",
+        "timeout_seconds": 10
+      }
+    ]
+  }
+}

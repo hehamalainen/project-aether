@@ -1,0 +1,38 @@
+Continuous Swarm Harness
+  Passed: no
+  Agents: 1000
+  Submit Throughput: 1.57 proposals/sec
+  Submit Throughput (total phase): 1.34 proposals/sec
+  Promotion Throughput: 1.15 proposals/sec
+  Completion Throughput: 1.29 proposals/sec
+  Submit/Promote Ratio (total): 1.17x
+  Submit/Complete Ratio (total): 1.04x
+  Physics Window: lambda=0.00/s mu=0.00/s rho=n/a
+  Semantic Fallback Window: rate=0.000 hits=0
+  Submit P95: 5759.84 ms
+  Enqueue->Ack P95: 5759.84 ms
+  Ack->Promote P95: 62092.59 ms
+  Conflict Rate: 0.105
+  Backlog End: 214
+  Submit Throttled (429): 1328003 (99.55% of attempts)
+  Intake Throttle: high=220 low=170 wait=829780.6s
+  Promoted Proposals: 4829
+  Promotion Records: 684
+  Promotion Phases Avg (ms): select=4.9, evaluate=34.8, snapshot=8.9, 
+gates=14.1, commit=1.1
+  Promotion Internals Avg (ms): clone=0.0, snapshot_hash=1.2, 
+snapshot_materialize=7.4, snapshot_db_commit=0.1, snapshot_publish=0.0
+             SLO Checks             
+┏━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
+┃ Check                   ┃ Result ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
+│ submit_throughput_ok    │ PASS   │
+│ promotion_throughput_ok │ PASS   │
+│ submit_p95_ok           │ FAIL   │
+│ conflict_rate_ok        │ PASS   │
+│ backlog_end_ok          │ PASS   │
+│ submit_failure_rate_ok  │ PASS   │
+│ window_rho_ok           │ PASS   │
+│ fallback_rate_ok        │ PASS   │
+└─────────────────────────┴────────┘
+Wrote report: .pytest-artifacts/phase1/phase1-60m-preflight-20260304-121522.json

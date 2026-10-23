@@ -1,0 +1,38 @@
+{
+  "scenario": "class2",
+  "expected_terminal_counts": {
+    "PROMOTED": 2
+  },
+  "submission_mode": "sequential",
+  "expected_outcome": "PROMOTED",
+  "expected_reason": "synthesis_success",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "config.py",
+        "affected_symbols": ["config.py::CLASS:ServerConfig::FUNC:__init__"],
+        "content": "class ServerConfig:\n    def __init__(self):\n        self.host = \"localhost\"\n        self.port = 8080\n        self.max_connections = 100\n        self.timeout = 30\n"
+      }
+    },
+    {
+      "id": "agent_2",
+      "proposal": {
+        "path": "config.py",
+        "affected_symbols": ["config.py::CLASS:ServerConfig::FUNC:__init__"],
+        "content": "class ServerConfig:\n    def __init__(self):\n        self.host = \"localhost\"\n        self.port = 8080\n        self.max_connections = 100\n        self.enable_tls = True\n"
+      }
+    }
+  ],
+  "golden_assertions": {
+    "config.py": {
+      "must_contain": [
+        "self.timeout = 30",
+        "self.enable_tls = True"
+      ],
+      "must_not_contain": [
+        "CONFLICT"
+      ]
+    }
+  }
+}

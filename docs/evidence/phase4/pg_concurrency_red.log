@@ -1,0 +1,139 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.3, pytest-9.0.2, pluggy-1.6.0 -- .venv/bin/python
+cachedir: .pytest_cache
+rootdir: <REPO_ROOT>
+configfile: pyproject.toml
+plugins: anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 3 items
+
+tests/aether/test_postgres_concurrency.py::test_postgres_concurrency_conflict_set_id PASSED [ 33%]
+tests/aether/test_postgres_concurrency.py::test_postgres_concurrency_paths_lock PASSED [ 66%]
+tests/aether/test_postgres_concurrency.py::test_postgres_concurrency_proposal_ids_lock FAILED [100%]
+
+=================================== FAILURES ===================================
+_________________ test_postgres_concurrency_proposal_ids_lock __________________
+
+    @pytest.mark.asyncio
+    async def test_postgres_concurrency_proposal_ids_lock():
+        """Proposals with no affected paths. Locked by sorted proposal IDs."""
+        database_url = os.environ.get("DATABASE_URL")
+        main_engine = create_engine(database_url)
+        SQLModel.metadata.create_all(main_engine)
+        session = Session(main_engine)
+    
+        try:
+            storage_path_a = Path(f"/tmp/conc_ids_storage_a_{os.urandom(4).hex()}")
+            storage_path_b = Path(f"/tmp/conc_ids_storage_b_{os.urandom(4).hex()}")
+            storage_path_a.mkdir(parents=True, exist_ok=True)
+            storage_path_b.mkdir(parents=True, exist_ok=True)
+    
+            repo_id = f"repo_ids_{os.urandom(4).hex()}"
+            head_id, doc_store = await setup_test_repo(session, repo_id, storage_path_a)
+    
+            # Empty paths
+            prop_a = Proposal(
+                repo_id=repo_id,
+                agent_id="agent_a",
+                change_type="full_file",
+                change_content="",
+                affected_paths=json.dumps([]),
+                affected_symbols=json.dumps([]),
+                base_head_id=head_id,
+                status=ProposalStatus.PENDING
+            )
+            prop_b = Proposal(
+                repo_id=repo_id,
+                agent_id="agent_b",
+                change_type="full_file",
+                change_content="",
+                affected_paths=json.dumps([]),
+                affected_symbols=json.dumps([]),
+                base_head_id=head_id,
+                status=ProposalStatus.PENDING
+            )
+            session.add(prop_a)
+            session.add(prop_b)
+            session.commit()
+    
+            loop = asyncio.get_running_loop()
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                fut_a = loop.run_in_executor(executor, run_promoter, database_url, repo_id, storage_path_a, doc_store)
+                fut_b = loop.run_in_executor(executor, run_promoter, database_url, repo_id, storage_path_b, doc_store)
+                await asyncio.gather(fut_a, fut_b)
+    
+            session.expire_all()
+            props = session.exec(select(Proposal).where(Proposal.repo_id == repo_id)).all()
+            promoted = [p for p in props if p.status == ProposalStatus.PROMOTED]
+            promotions = session.exec(select(Promotion).where(Promotion.repo_id == repo_id)).all()
+    
+            # Both should promote, serialized by proposal ID locks
+            assert len(promoted) == 2, f"Expected both to be promoted, got {len(promoted)}"
+>           assert len(promotions) == 2, f"Expected 2 promotions, got {len(promotions)}"
+E           AssertionError: Expected 2 promotions, got 4
+E           assert 4 == 2
+E            +  where 4 = len([Promotion(id='prom_1a231503394a', from_head_sequence=0, to_head_sequence=1, excluded_proposals='[]', policy_score=1.0, final_score=0.5, triggered_by='batch', from_head_id='head_init_9ca26692', repo_id='repo_ids_32c6368e', to_head_id='head_f96038e78e8e', included_proposals='["prop_7295ed6d5055"]', evidence='{"build": "PASS", "_op_graph_parent": "head_init_9ca26692@0", "_op_graph_node": "dcda6f1871ec37df949a71d701e303945500601e366d5ee75072c88da670adf8", "_op_graph_payload_sha256": "dcda6f1871ec37df949a71d701e303945500601e366d5ee75072c88da670adf8", "_op_graph_kind": "promotion", "_replay_snapshot_id": "snap_c23f88a44cf1", "_replay_from_hash": "5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47", "_replay_to_hash": "5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47", "_replay_gate_vector": "build:PASS"}', confidence_score=0.5190524980688874, decision_rationale=None, created_at=datetime.datetime(2026, 7, 9, 21, 31, 22, 676198)), Promotion(id='prom_1b8b2ccabd74', from_head_sequence=0, to_head_sequence=1, excluded_proposals='[]', policy_score=1.0, final_score=0.5, triggered_by='batch', from_head_id='head_init_9ca26692', repo_id='repo_ids_32c6368e', to_head_...": "5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47", "_replay_gate_vector": "build:PASS"}', confidence_score=0.5107695154586736, decision_rationale=None, created_at=datetime.datetime(2026, 7, 9, 21, 31, 22, 709919)), Promotion(id='prom_37b9a4284631', from_head_sequence=2, to_head_sequence=3, excluded_proposals='[]', policy_score=1.0, final_score=0.5, triggered_by='batch', from_head_id='head_02d2d94181e1', repo_id='repo_ids_32c6368e', to_head_id='head_54f840ff0805', included_proposals='["prop_ce073d132d20"]', evidence='{"build": "PASS", "_op_graph_parent": "head_02d2d94181e1@2", "_op_graph_node": "f3706eb10746bd78da0e7c9f320100a230429484b7725f6403a8e6e5c2d858fa", "_op_graph_payload_sha256": "f3706eb10746bd78da0e7c9f320100a230429484b7725f6403a8e6e5c2d858fa", "_op_graph_kind": "promotion", "_replay_snapshot_id": "snap_c23f88a44cf1", "_replay_from_hash": "5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47", "_replay_to_hash": "5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47", "_replay_gate_vector": "build:PASS"}', confidence_score=0.5190524980688874, decision_rationale=None, created_at=datetime.datetime(2026, 7, 9, 21, 31, 22, 727027))])
+
+tests/aether/test_postgres_concurrency.py:268: AssertionError
+----------------------------- Captured stdout call -----------------------------
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_a72553504ee3 event_type=snapshot.created repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] snapshot_created               content_hash=5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47 file_count=1 repo_id=repo_ids_32c6368e snapshot_id=snap_c23f88a44cf1 total_bytes=40
+2026-07-09 21:31:22 [info     ] processing_pending_proposals   pending_count=2 repo_id=repo_ids_32c6368e scan_limit=200
+2026-07-09 21:31:22 [info     ] processing_pending_proposals   pending_count=2 repo_id=repo_ids_32c6368e scan_limit=200
+2026-07-09 21:31:22 [debug    ] snapshot_cache_hit             content_hash=5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47 repo_id=repo_ids_32c6368e snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] snapshot_cache_hit             content_hash=5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47 repo_id=repo_ids_32c6368e snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_953b2ab13f02 event_type=gate.started repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] gate_started                   command="echo 'ok'" gate_name=build snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_8469e8be0305 event_type=gate.started repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] gate_started                   command="echo 'ok'" gate_name=build snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_15f74915da2c event_type=gate.completed repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] gate_completed                 duration_ms=7 exit_code=0 gate_name=build snapshot_id=snap_c23f88a44cf1 status=PASS
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_4fe3d5633b62 event_type=gate.completed repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] gate_completed                 duration_ms=5 exit_code=0 gate_name=build snapshot_id=snap_c23f88a44cf1 status=PASS
+2026-07-09 21:31:22 [debug    ] agent_trust_calculated         agent_id=batch combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-09 21:31:22 [debug    ] agent_trust_calculated         agent_id=batch combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-09 21:31:22 [debug    ] agent_trust_calculated         agent_id=agent_a combined=0.5635083268962916 raw_conf=0.5 scope=global trust=0.625
+2026-07-09 21:31:22 [debug    ] agent_trust_calculated         agent_id=agent_a combined=0.5635083268962916 raw_conf=0.5 scope=global trust=0.625
+2026-07-09 21:31:22 [info     ] head_updated                   head_id=head_f96038e78e8e repo_id=repo_ids_32c6368e sequence=1 snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_0f3314d82eb8 event_type=proposal.promoted repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] proposal_status_updated        new_status=PROMOTED old_status=PENDING proposal_id=prop_7295ed6d5055 reason=None
+2026-07-09 21:31:22 [info     ] head_updated                   head_id=head_6a68bbac6fe9 repo_id=repo_ids_32c6368e sequence=1 snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_b73524e37b05 event_type=head.updated repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] promotion_completed            new_head_id=head_f96038e78e8e new_sequence=1 phase_timing={'record_commit_ms': 1.2799170799553394, 'head_commit_ms': 7.765708956867456, 'status_phase_ms': 2.8068749234080315, 'trust_commit_ms': 0.1954580657184124, 'publish_ms': 2.003459259867668, 'commit_total_ms': 12.04795902594924, 'total_ms': 17.414416652172804} promotion_id=prom_1a231503394a proposals=['prop_7295ed6d5055'] repo_id=repo_ids_32c6368e score=0.5
+2026-07-09 21:31:22 [info     ] pg_advisory_lock_released
+2026-07-09 21:31:22 [debug    ] snapshot_cache_hit             content_hash=5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47 repo_id=repo_ids_32c6368e snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_b38508c6029e event_type=proposal.promoted repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] proposal_status_updated        new_status=PROMOTED old_status=PENDING proposal_id=prop_7295ed6d5055 reason=None
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_5a685ca5b900 event_type=gate.started repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] gate_started                   command="echo 'ok'" gate_name=build snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_2eb5d524de54 event_type=head.updated repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] promotion_completed            new_head_id=head_6a68bbac6fe9 new_sequence=1 phase_timing={'record_commit_ms': 1.3137501664459705, 'head_commit_ms': 12.731124646961689, 'status_phase_ms': 2.563915681093931, 'trust_commit_ms': 0.3087921068072319, 'publish_ms': 4.480416886508465, 'commit_total_ms': 16.917582601308823, 'total_ms': 24.742832873016596} promotion_id=prom_1b8b2ccabd74 proposals=['prop_7295ed6d5055'] repo_id=repo_ids_32c6368e score=0.5
+2026-07-09 21:31:22 [info     ] pg_advisory_lock_released
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_71ccb5853d10 event_type=gate.completed repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] gate_completed                 duration_ms=6 exit_code=0 gate_name=build snapshot_id=snap_c23f88a44cf1 status=PASS
+2026-07-09 21:31:22 [debug    ] snapshot_cache_hit             content_hash=5a9a974698f674c17f30b83d9e3bea1dd845fb021e929621b6c3fa7233870c47 repo_id=repo_ids_32c6368e snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] agent_trust_calculated         agent_id=batch combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-09 21:31:22 [debug    ] agent_trust_calculated         agent_id=agent_b combined=0.5358983848622454 raw_conf=0.5 scope=global trust=0.5714285714285714
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_6eb2fd65e201 event_type=gate.started repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] gate_started                   command="echo 'ok'" gate_name=build snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [info     ] head_updated                   head_id=head_02d2d94181e1 repo_id=repo_ids_32c6368e sequence=2 snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_5723a39a909f event_type=gate.completed repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] gate_completed                 duration_ms=6 exit_code=0 gate_name=build snapshot_id=snap_c23f88a44cf1 status=PASS
+2026-07-09 21:31:22 [debug    ] agent_trust_calculated         agent_id=batch combined=0.5 raw_conf=0.5 scope=global trust=0.5
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_d42b71fa38a0 event_type=proposal.promoted repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] proposal_status_updated        new_status=PROMOTED old_status=PENDING proposal_id=prop_ce073d132d20 reason=None
+2026-07-09 21:31:22 [debug    ] agent_trust_calculated         agent_id=agent_b combined=0.5635083268962916 raw_conf=0.5 scope=global trust=0.625
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_afe19572b1ad event_type=head.updated repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] promotion_completed            new_head_id=head_02d2d94181e1 new_sequence=2 phase_timing={'record_commit_ms': 3.0649169348180294, 'head_commit_ms': 8.96795792505145, 'status_phase_ms': 3.3145002089440823, 'trust_commit_ms': 0.36733411252498627, 'publish_ms': 1.5226248651742935, 'commit_total_ms': 15.714709181338549, 'total_ms': 19.62291682139039} promotion_id=prom_b393a20295ff proposals=['prop_ce073d132d20'] repo_id=repo_ids_32c6368e score=0.5
+2026-07-09 21:31:22 [info     ] pg_advisory_lock_released
+2026-07-09 21:31:22 [info     ] promotion_iteration_timing     conflict_sets_processed=0 conflict_sets_seen=0 conflict_sets_with_candidate=0 pending_count=2 promotions=2 repo_id=repo_ids_32c6368e timing={'select_ms': 2.656416967511177, 'evaluate_ms': 44.50558312237263, 'clone_ms': 0.030833296477794647, 'snapshot_ms': 2.028082963079214, 'snapshot_hash_ms': 0.2027922309935093, 'snapshot_materialize_ms': 0.0, 'snapshot_db_commit_ms': 0.0, 'snapshot_publish_ms': 0.0, 'gates_ms': 28.91566650941968, 'commit_ms': 27.76266820728779, 'promote_ms': 37.15937398374081, 'processed_conflict_sets': 0.0, 'processed_non_conflicting_batches': 2.0, 'processed_non_conflicting_proposals': 2.0, 'processed_conflicting_promotions': 0.0, 'proposals_scanned_count': 2.0, 'candidates_built_count': 2.0, 'promotions_created_count': 2.0, 'proposals_promoted_count': 2.0, 'hit_time_cap_count': 0.0, 'hit_batch_cap_count': 0.0, 'conflict_sets_seen_count': 0.0, 'conflict_sets_no_candidate_count': 0.0, 'external_commit_abort_count': 0.0, 'snapshot_phase_repo_lookup_ms': 0.5828333087265491, 'snapshot_phase_repo_lookup_identity_map_size': 5.0, 'snapshot_phase_cache_lookup_ms': 0.9523327462375164, 'snapshot_phase_cache_lookup_identity_map_size': 5.0, 'total_ms': 100.59699974954128}
+2026-07-09 21:31:22 [info     ] head_updated                   head_id=head_54f840ff0805 repo_id=repo_ids_32c6368e sequence=3 snapshot_id=snap_c23f88a44cf1
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_2956bdd82927 event_type=proposal.promoted repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] proposal_status_updated        new_status=PROMOTED old_status=PENDING proposal_id=prop_ce073d132d20 reason=None
+2026-07-09 21:31:22 [debug    ] event_published                event_id=evt_93ce4df4d940 event_type=head.updated repo_id=repo_ids_32c6368e
+2026-07-09 21:31:22 [info     ] promotion_completed            new_head_id=head_54f840ff0805 new_sequence=3 phase_timing={'record_commit_ms': 0.4957919009029865, 'head_commit_ms': 3.773625008761883, 'status_phase_ms': 4.3810829520225525, 'trust_commit_ms': 0.2798750065267086, 'publish_ms': 1.1392920278012753, 'commit_total_ms': 8.93037486821413, 'total_ms': 13.409667182713747} promotion_id=prom_37b9a4284631 proposals=['prop_ce073d132d20'] repo_id=repo_ids_32c6368e score=0.5
+2026-07-09 21:31:22 [info     ] pg_advisory_lock_released
+2026-07-09 21:31:22 [info     ] promotion_iteration_timing     conflict_sets_processed=0 conflict_sets_seen=0 conflict_sets_with_candidate=0 pending_count=2 promotions=2 repo_id=repo_ids_32c6368e timing={'select_ms': 2.4780831299722195, 'evaluate_ms': 48.08858362957835, 'clone_ms': 0.026875175535678864, 'snapshot_ms': 3.6074984818696976, 'snapshot_hash_ms': 0.24724984541535378, 'snapshot_materialize_ms': 0.0, 'snapshot_db_commit_ms': 0.0, 'snapshot_publish_ms': 0.0, 'gates_ms': 34.87091604620218, 'commit_ms': 25.847957469522953, 'promote_ms': 38.42974966391921, 'processed_conflict_sets': 0.0, 'processed_non_conflicting_batches': 2.0, 'processed_non_conflicting_proposals': 2.0, 'processed_conflicting_promotions': 0.0, 'proposals_scanned_count': 2.0, 'candidates_built_count': 2.0, 'promotions_created_count': 2.0, 'proposals_promoted_count': 2.0, 'hit_time_cap_count': 0.0, 'hit_batch_cap_count': 0.0, 'conflict_sets_seen_count': 0.0, 'conflict_sets_no_candidate_count': 0.0, 'external_commit_abort_count': 0.0, 'snapshot_phase_repo_lookup_ms': 0.6901249289512634, 'snapshot_phase_repo_lookup_identity_map_size': 5.0, 'snapshot_phase_cache_lookup_ms': 2.5574988685548306, 'snapshot_phase_cache_lookup_identity_map_size': 5.0, 'total_ms': 110.01579090952873}
+=========================== short test summary info ============================
+FAILED tests/aether/test_postgres_concurrency.py::test_postgres_concurrency_proposal_ids_lock
+========================= 1 failed, 2 passed in 56.48s =========================

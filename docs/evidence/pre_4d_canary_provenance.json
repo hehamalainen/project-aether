@@ -1,0 +1,12 @@
+{
+  "proposal_id": "prop_14ffc01c199c",
+  "event_type": "promotion",
+  "event_reason": "contention_winner_promoted",
+  "created_at": "2026-07-14T23:01:30.038223",
+  "contention_group_id": "semantic-canary:canary-run-20260714t230051z:repo_88af28034644:canary-group-canary-run-20260714t230051z",
+  "contention_policy": "semantic_merge",
+  "winner_proposal_id": null,
+  "target_paths": [
+    "src/loglens/runtime.py"
+  ]
+}

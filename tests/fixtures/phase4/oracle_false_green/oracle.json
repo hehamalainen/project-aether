@@ -1,0 +1,42 @@
+{
+  "scenario": "oracle_false_green",
+  "expected_terminal_counts": {
+    "QUARANTINED": 1
+  },
+  "expected_outcome": "PROMOTED",
+  "expected_reason": "synthesis_success",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "config.py",
+        "affected_symbols": [
+          "config.py::CLASS:Config"
+        ],
+        "content": "class Config:\n    host = 'localhost'\n    port = 80\n"
+      }
+    }
+  ],
+  "golden_assertions": {
+    "config.py": {
+      "must_contain": [],
+      "must_not_contain": [
+        "port = 80"
+      ]
+    }
+  },
+  "gate_config": {
+    "gates": [
+      {
+        "name": "syntax",
+        "command": "python3 -m py_compile *.py",
+        "timeout_seconds": 10
+      },
+      {
+        "name": "unit_tests",
+        "command": "python3 app.py",
+        "timeout_seconds": 10
+      }
+    ]
+  }
+}

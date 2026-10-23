@@ -1,0 +1,37 @@
+{
+  "scenario": "worker_failure",
+  "expected_terminal_counts": {
+    "REJECTED": 1
+  },
+  "expected_outcome": "QUARANTINED",
+  "expected_reason": "worker_crash",
+  "agents": [
+    {
+      "id": "agent_1",
+      "proposal": {
+        "path": "test.py",
+        "affected_symbols": [
+          "test.py"
+        ],
+        "content": "print('hello')\n"
+      }
+    }
+  ],
+  "golden_assertions": {
+    "test.py": {
+      "must_contain": [],
+      "must_not_contain": [
+        "hello"
+      ]
+    }
+  },
+  "gate_config": {
+    "gates": [
+      {
+        "name": "crashing_gate",
+        "command": "python3 -c 'import sys; sys.exit(255)'",
+        "timeout_seconds": 10
+      }
+    ]
+  }
+}

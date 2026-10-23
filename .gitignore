@@ -1,0 +1,56 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+*.sqlite3
+.mypy_cache/
+.pytest_cache/
+ruff_cache/
+.idea/
+.vscode/
+.DS_Store
+/build/
+/dist/
+*.egg-info/
+
+# Local runtime and benchmark artifacts
+.run/
+.pytest-artifacts/
+*.log
+*.pid
+scratch/*.diff
+scratch/*.patch
+!docs/evidence/**/*.log
+!peer-review-artifacts/**/*.log
+
+
+# Local Aether state (non-source)
+*.db
+*.db-shm
+*.db-wal
+aether.db
+aether_storage/
+apps/aether_server/aether.db
+apps/aether_ui/ui.log
+aether-rs/target/
+test_physics.json
+scratch/cp_ps.txt
+scratch/git_fsck.txt
+
+# Phase 1A smoke artifacts
+smoke_report_latest.json
+smoke_server_latest.log
+output.json
+.soak_workspace/
+.soak_workspace_pg/
+
+# Virtual environments and dependencies
+.venv/
+node_modules/
+**/node_modules/
+.idasdlc/
+/idasdlc.db
+# Local benchmark JSONs and nosync directory
+*_pg.json
+*_pg_rust_mp.json
+local_run.nosync/

@@ -1,0 +1,88 @@
+============================================
+Aether-RS PostgreSQL E2E Validation
+============================================
+
+  PG Host:    localhost:5432
+  Test DB:    aether_test_e2e_49444
+  Server:     http://localhost:8100
+
+📦 Creating test database...
+CREATE DATABASE
+  ✅ Database created
+
+🔨 Building aether-rs (db-postgres)...
+  ✅ Build succeeded
+
+🚀 Starting aether-rs server (PostgreSQL)...
+[2m2026-05-09T07:17:07.703583Z[0m [32m INFO[0m [2mserver::db_postgres[0m[2m:[0m Connecting to Aether Control Plane Database (PostgreSQL)
+[2m2026-05-09T07:17:07.724395Z[0m [32m INFO[0m [2mserver::db_postgres[0m[2m:[0m Running PostgreSQL database migrations...
+[2m2026-05-09T07:17:07.767545Z[0m [32m INFO[0m [2mserver::db_postgres[0m[2m:[0m Aether-RS Server (PostgreSQL) listening on 0.0.0.0:8100
+  ✅ Server started (PID: 49618)
+
+📋 Test 1: Health & Root API Parity
+  ✅ GET / returns service name
+  ✅ GET /v1/health returns healthy
+  ✅ GET /v1/health returns service
+
+📋 Test 2: Create Repository
+  ✅ Repo created with ID
+  ✅ Repo has correct name
+  ✅ Repo starts at sequence 0
+  → Repo ID: repo_3003f183652c
+
+📋 Test 3: Get Repository
+  ✅ GET repo matches created ID
+
+📋 Test 4: Submit Proposal
+  ✅ Proposal created with ID
+  ✅ Proposal status is PENDING
+  → Proposal ID: prop_5ffc693e3294
+
+📋 Test 5: List Proposals
+  ✅ Listed 1 proposal
+  ✅ Proposal status confirmed PENDING
+
+📋 Test 6: Get Head (pre-promotion)
+  ✅ Head sequence is 0 before promotion
+
+📋 Test 7: Commit Promotion
+  ✅ Promotion succeeded
+  ✅ New head ID assigned
+  ✅ Head sequence advanced to 1
+  → New head: head_1bbecca230e4 (seq: 1)
+
+📋 Test 8: Get Head (post-promotion)
+  ✅ Head sequence is 1
+  ✅ Snapshot ID present
+  ✅ Content hash present
+  → Snapshot: snap_e2e_1778311029
+  → Hash: a417c853861d636616f4a39a093827bdc0ca9c030245ddab5828c5e7a20201e3
+
+📋 Test 9: List Promotions
+  ✅ Listed 1 promotion
+
+📋 Test 10: Proposal Status Post-Promotion
+  ✅ Proposal status updated to PROMOTED
+
+📋 Test 11: Trust Metrics Persisted
+  ✅ Trust row exists for agent
+  ✅ promoted_count >= 1 (got 1)
+
+📋 Test 12: Native Promotion Returns 501
+  ✅ Native promotion returns 501 NOT_IMPLEMENTED
+
+📋 Test 13: Chained Promotion (seq 1→2)
+  ✅ Second promotion succeeded
+  ✅ Head sequence advanced to 2
+  → Chain verified: seq 0 → 1 → 2
+
+📋 Test 14: Second Agent Trust Metrics
+  ✅ Second agent trust row exists (promoted_count=1)
+
+============================================
+Results: 26/26 passed, 0 failed
+============================================
+✅ PG E2E VALIDATION PASSED
+
+🧹 Dropping test database aether_test_e2e_49444...
+DROP DATABASE

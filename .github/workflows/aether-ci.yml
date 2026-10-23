@@ -1,0 +1,200 @@
+name: Aether CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  aether-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Burst throughput guard and report
+        run: |
+          set -euo pipefail
+          mkdir -p .pytest-artifacts
+          python -m pytest tests/aether/test_swarm_scale.py::TestSwarmScale::test_burst_traffic_50_agents -s -q | tee .pytest-artifacts/burst-throughput.txt
+          throughput="$(grep -E "Throughput:" .pytest-artifacts/burst-throughput.txt | tail -1 | sed -E 's/.*Throughput:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/')"
+          if [ -z "${throughput}" ]; then
+            echo "Unable to parse burst throughput metric from test output" >&2
+            exit 1
+          fi
+          {
+            echo "### Aether Burst Throughput"
+            echo ""
+            echo "- Throughput: ${throughput} proposals/sec"
+            echo "- Guard: > 20 proposals/sec (enforced by test assertion)"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run remaining Aether tests
+        run: |
+          python -m pytest tests/aether -v -k "not test_burst_traffic_50_agents"
+
+      - name: Upload throughput output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-burst-throughput
+          path: .pytest-artifacts/burst-throughput.txt
+
+  aether-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: aether-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run 500-agent soak profile and collect metrics
+        env:
+          AETHER_ENABLE_SOAK_TESTS: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p .pytest-artifacts
+          python -m pytest tests/aether/test_swarm_scale.py::TestSwarmSoakProfile::test_500_agents_low_contention_soak -s -q | tee .pytest-artifacts/soak-500.txt
+
+          throughput="$(grep -E "Throughput:" .pytest-artifacts/soak-500.txt | tail -1 | sed -E 's/.*Throughput:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\1/')"
+          conflict_rate="$(grep -E "Conflict Rate:" .pytest-artifacts/soak-500.txt | tail -1 | sed -E 's/.*Conflict Rate:[[:space:]]*([0-9]+(\.[0-9]+)?%).*/\1/')"
+          p95_latency="$(grep -E "P95:" .pytest-artifacts/soak-500.txt | tail -1 | sed -E 's/.*P95:[[:space:]]*([0-9]+(\.[0-9]+)?ms).*/\1/')"
+
+          if [ -z "${throughput}" ] || [ -z "${conflict_rate}" ] || [ -z "${p95_latency}" ]; then
+            echo "Unable to parse soak metrics from output" >&2
+            exit 1
+          fi
+
+          {
+            echo "### Aether 500-Agent Soak"
+            echo ""
+            echo "- Throughput: ${throughput} proposals/sec"
+            echo "- Conflict Rate: ${conflict_rate}"
+            echo "- P95 Proposal Latency: ${p95_latency}"
+            echo "- Source: TestSwarmSoakProfile::test_500_agents_low_contention_soak"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload soak metrics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-soak-500
+          path: .pytest-artifacts/soak-500.txt
+
+  aether-continuous-profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: aether-tests
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run continuous 1000-agent harness
+        run: |
+          set -euo pipefail
+          mkdir -p .pytest-artifacts
+          python -m apps.aether_cli.main swarm-harness \
+            --agents 1000 \
+            --files 500 \
+            --run-seconds 60 \
+            --drain-seconds 20 \
+            --contention low \
+            --min-interval-ms 400 \
+            --max-interval-ms 1600 \
+            --inflight 300 \
+            --promotion-batch 30 \
+            --promotion-interval-ms 40 \
+            --monitor-interval-ms 500 \
+            --min-submit-throughput 40 \
+            --min-promotion-throughput 0.2 \
+            --max-submit-p95-ms 140 \
+            --max-conflict-rate 0.35 \
+            --max-backlog-end 2000 \
+            --max-submit-failure-rate 0.02 \
+            --seed 2026 \
+            --output-json .pytest-artifacts/swarm-continuous-1000.json \
+            --strict \
+            > .pytest-artifacts/swarm-continuous-1000.log 2>&1
+
+      - name: Add harness summary
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path(".pytest-artifacts/swarm-continuous-1000.json").read_text())
+          metrics = report["metrics"]
+          checks = report["checks"]
+
+          lines = [
+              "### Aether Continuous 1000-Agent Profile",
+              "",
+              f"- Passed: {report['passed']}",
+              f"- Submit Throughput: {metrics['submit_throughput']:.2f} proposals/sec",
+              f"- Promotion Throughput: {metrics['promotion_throughput']:.2f} proposals/sec",
+              f"- Submit P95: {metrics['p95_submit_latency_ms']:.2f} ms",
+              f"- Conflict Rate: {metrics['conflict_rate']:.3f}",
+              f"- Backlog End: {metrics['backlog_end']}",
+              f"- Promoted Proposals: {metrics['proposals_promoted']}",
+              "",
+              "Checks:",
+          ]
+          for check, value in checks.items():
+              lines.append(f"- {check}: {value}")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\\n".join(lines) + "\\n")
+          PY
+
+      - name: Upload continuous harness artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-swarm-continuous-1000
+          path: |
+            .pytest-artifacts/swarm-continuous-1000.json
+            .pytest-artifacts/swarm-continuous-1000.log

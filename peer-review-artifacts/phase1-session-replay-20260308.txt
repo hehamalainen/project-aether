@@ -1,0 +1,26 @@
+2026-03-08 20:20:14 [info     ] document_store_loaded_from_snapshot file_count=1000 repo_id=repo_7e0260ea381f snapshot_id=snap_cfdb048fc24f
+repo_id= repo_7e0260ea381f
+proposal_id= prop_fab9d3777519
+starting_status= ProposalStatus.QUARANTINED
+2026-03-08 20:20:14 [debug    ] event_published                event_id=evt_88b6a33b5f22 event_type=proposal.evaluating repo_id=repo_7e0260ea381f
+2026-03-08 20:20:14 [info     ] proposal_status_updated        new_status=EVALUATING old_status=QUARANTINED proposal_id=prop_fab9d3777519 reason=None
+2026-03-08 20:20:15 [debug    ] snapshot_cache_hit             content_hash=0464854390249c8785ea0c5306570358119febc01fa37f97b8b934655af1fc84 repo_id=repo_7e0260ea381f snapshot_id=snap_b0e6a54bdec8
+2026-03-08 20:20:15 [debug    ] event_published                event_id=evt_49a9b0dba8b8 event_type=gate.started repo_id=repo_7e0260ea381f
+2026-03-08 20:20:15 [info     ] gate_started                   command=true gate_name=syntax snapshot_id=snap_b0e6a54bdec8
+2026-03-08 20:20:15 [debug    ] event_published                event_id=evt_d26c81894024 event_type=gate.started repo_id=repo_7e0260ea381f
+2026-03-08 20:20:15 [info     ] gate_started                   command=true gate_name=tests snapshot_id=snap_b0e6a54bdec8
+2026-03-08 20:20:15 [debug    ] event_published                event_id=evt_6ca030be9d52 event_type=gate.completed repo_id=repo_7e0260ea381f
+2026-03-08 20:20:15 [info     ] gate_completed                 duration_ms=18 exit_code=0 gate_name=syntax snapshot_id=snap_b0e6a54bdec8 status=PASS
+2026-03-08 20:20:15 [debug    ] event_published                event_id=evt_52126c60ac9c event_type=gate.completed repo_id=repo_7e0260ea381f
+2026-03-08 20:20:15 [info     ] gate_completed                 duration_ms=7 exit_code=0 gate_name=tests snapshot_id=snap_b0e6a54bdec8 status=PASS
+2026-03-08 20:20:15 [debug    ] agent_trust_calculated         agent_id=agent_0335 combined=0.7903358075795169 raw_conf=0.7655064797883794 scope=global trust=0.5714285714285714
+candidate_score= 0.9371007422738551
+candidate_snapshot_id= snap_b0e6a54bdec8
+2026-03-08 20:20:15 [debug    ] agent_trust_calculated         agent_id=agent_0335 combined=0.7903358075795169 raw_conf=0.7655064797883794 scope=global trust=0.5714285714285714
+2026-03-08 20:20:15 [info     ] head_updated                   head_id=head_62e037e235c4 repo_id=repo_7e0260ea381f sequence=954 snapshot_id=snap_b0e6a54bdec8
+2026-03-08 20:20:15 [debug    ] event_published                event_id=evt_a6d112ee4554 event_type=proposal.promoted repo_id=repo_7e0260ea381f
+2026-03-08 20:20:15 [info     ] proposal_status_updated        new_status=PROMOTED old_status=EVALUATING proposal_id=prop_fab9d3777519 reason=None
+2026-03-08 20:20:15 [debug    ] event_published                event_id=evt_a555dc2b1c70 event_type=head.updated repo_id=repo_7e0260ea381f
+2026-03-08 20:20:15 [info     ] promotion_completed            new_head_id=head_62e037e235c4 new_sequence=954 phase_timing={'record_commit_ms': 1.028291997499764, 'head_commit_ms': 6.3758749747648835, 'status_phase_ms': 3.7644170224666595, 'trust_commit_ms': 0.07662491407245398, 'publish_ms': 1.3041659258306026, 'commit_total_ms': 11.245208908803761, 'total_ms': 135.98508294671774} promotion_id=prom_1829507ceaff proposals=['prop_fab9d3777519'] repo_id=repo_7e0260ea381f score=0.9371007422738551
+promotion_id= prom_1829507ceaff
+result=success

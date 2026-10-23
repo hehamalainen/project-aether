@@ -1,0 +1,28 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "name": "MX Swarm + Aether Integration",
+    "version": "0.1.0",
+    "description": "Configuration for MX Swarm agent orchestration with Aether VCS backend",
+    "vcs": {
+        "provider": "aether",
+        "aether_base_url": "http://localhost:8100/v1",
+        "aether_repo_id": "repo_placeholder"
+    },
+    "agent": {
+        "model": "gpt-4o",
+        "max_concurrent_tasks": 10,
+        "task_timeout_seconds": 300,
+        "confidence_threshold": 0.7
+    },
+    "gates": {
+        "syntax_check": true,
+        "unit_tests": true,
+        "lint": true,
+        "security_scan": false
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "json",
+        "output": "stdout"
+    }
+}
