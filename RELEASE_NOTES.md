@@ -1,6 +1,9 @@
-# Release Notes
+# Historical Predecessor Release Notes (`Evolution-Coding` / `IDASDLC` — Early Prototype)
 
-## Regression Verification
+> [!WARNING]
+> **Historical Predecessor-Project Document (Not Project Aether):** These test notes record a 14-test regression run from the earlier `Evolution-Coding` / `IDASDLC` prototype prior to the creation of Project Aether. For Project Aether's current verification commands and test suites (`python -m pytest tests/aether/ -v` and `cargo test --workspace`), see [`README.md`](README.md) and [`docs/aether_claims_matrix_2026_04_13.md`](docs/aether_claims_matrix_2026_04_13.md).
+
+## Historical Regression Verification (Predecessor Workspace)
 
 ### Targeted Suites
 - Command: `PYTHONPATH=/workspaces/Evolution-Coding:/workspaces/Evolution-Coding/packages:/workspaces/Evolution-Coding/apps .venv/bin/python -m pytest tests/test_cli_run_detail.py tests/test_backend_runs_api.py -q`

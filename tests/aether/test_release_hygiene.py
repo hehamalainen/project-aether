@@ -243,4 +243,101 @@ def test_git_checkout_is_complete_fsck_clean_and_history_secret_free() -> None:
     )
 
 
+def test_public_claims_and_evidence_documentation_integrity() -> None:
+    """Public docs must align claims with committed evidence, backend boundaries, and prototype status."""
+    import json
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    agents_doc = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    claims_matrix = (REPO_ROOT / "docs" / "aether_claims_matrix_2026_04_13.md").read_text(encoding="utf-8")
+    artifact_index = (REPO_ROOT / "docs" / "aether_artifact_index_2026_04_13.md").read_text(encoding="utf-8")
+    readiness_doc = (REPO_ROOT / "docs" / "aether_readiness_package_2026_04_11.md").read_text(encoding="utf-8")
+    stage3_doc = (REPO_ROOT / "docs" / "aether_stage3_pg_baseline_closeout_2026_05_10.md").read_text(encoding="utf-8")
+    cas_doc = (REPO_ROOT / "docs" / "architecture" / "aether_cas_correctness_proof.md").read_text(encoding="utf-8")
+    human_doc = (REPO_ROOT / "HUMAN.md").read_text(encoding="utf-8")
+    exec_summary = (REPO_ROOT / "EXECUTIVE_SUMMARY.md").read_text(encoding="utf-8")
+    prd_review = (REPO_ROOT / "PRD_REVIEW.md").read_text(encoding="utf-8")
+    release_notes = (REPO_ROOT / "RELEASE_NOTES.md").read_text(encoding="utf-8")
+    qual_run = (REPO_ROOT / "qualification" / "semantic_suite" / "run.py").read_text(encoding="utf-8")
+
+    # 1. Research prototype opening & security/backend scoping
+    assert (
+        "Aether is an experimental repository control plane for concurrent coding agents. "
+        "It implements proposal intake, CRDT-based document operations, selected structural "
+        "merge workflows, snapshots, and configurable promotion gates."
+    ) in readme
+    assert "AETHER_ALLOW_CUSTOM_GATE_COMMANDS" in readme
+    assert "/v1/repos/:id/commit_promotion" in readme
+    assert "commit_promotion" in readme
+    assert "Claims-to-Evidence Table" in readme
+
+    # 2. Cross-check committed 1000-agent preflight JSON against README, Claims Matrix, and Artifact Index
+    preflight_path = (
+        REPO_ROOT / "peer-review-artifacts" / "20260304" / "phase1" / "phase1-60m-preflight-20260304-121522.json"
+    )
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    assert preflight["passed"] is False
+    assert preflight["checks"]["submit_p95_ok"] is False
+    assert round(preflight["metrics"]["p95_submit_latency_ms"], 2) == 5759.84
+    assert preflight["metrics"]["submitted_total"] == 1334063
+    assert preflight["metrics"]["submit_throttled"] == 1328003
+    assert preflight["metrics"]["submitted_success"] == 5637
+    assert round(preflight["metrics"]["promotion_throughput"], 2) == 1.15
+
+    for doc_name, text in (
+        ("README.md", readme),
+        ("docs/aether_claims_matrix_2026_04_13.md", claims_matrix),
+        ("docs/aether_artifact_index_2026_04_13.md", artifact_index),
+        ("docs/aether_readiness_package_2026_04_11.md", readiness_doc),
+    ):
+        assert "5,759.84" in text or "5759.84" in text, f"{doc_name} must disclose p95_submit_latency_ms=5759.84"
+        assert "1,328,003" in text or "99.55%" in text, f"{doc_name} must disclose 99.55% intake throttling"
+        assert (
+            "passed=false" in text
+            or "passed: false" in text
+            or "`passed`: `false`" in text
+            or '"passed": false' in text
+        ), f"{doc_name} must explicitly state the committed 60m preflight failed (passed=false)"
+        assert "proposals promoted/" in text, f"{doc_name} must label promotion_throughput as proposals promoted/s"
+        assert "0.16" in text, f"{doc_name} must disclose 0.16 promotion batches/s for the 684 batches"
+        assert "1.15` promotions/s" not in text and "1.15 promotions/s" not in text
+        assert "0.8037` promotions/s" not in text and "0.8037 promotions/s" not in text
+
+    # 2b. Verify advertised runtime toolchain minimums in README.md and AGENTS.md
+    assert "1.88" in readme and "20.9.0" in readme
+    assert "1.88" in agents_doc and "20.9.0" in agents_doc
+    assert "Rust `1.70+`" not in readme and "Rust 1.70+" not in agents_doc
+    assert "Node.js `18+`" not in readme
+
+    # 3. Cross-check semantic qualification reports (simulated synthesis worker & echo 'ok' gate)
+    qual_report = json.loads(
+        (
+            REPO_ROOT
+            / "qualification"
+            / "semantic_suite"
+            / "report_sqlite_v2_024163b8a3ebf951923a8e6899051af2793f1748.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert qual_report["model_configuration"] == "simulated-synthesis-worker"
+    assert '"command": "echo \'ok\'"' in qual_run
+    assert "simulated-synthesis-worker" in readme
+    assert "simulated-synthesis-worker" in claims_matrix
+    assert "1.0-fake" in readme and "1.0-fake" in claims_matrix
+    assert "requiring LLM reconciliation" not in qual_run
+
+    # 4. Stage 3 PG closeout & CAS design argument scoping
+    assert "53.96%" in stage3_doc
+    assert "175ms" in stage3_doc
+    assert "echo SOAK_GATE_OK" in stage3_doc
+    assert "complex CRDT promotions" not in stage3_doc
+    assert "Conditional OCC & Advisory-Locking Safety Argument" in cas_doc
+    assert "commit_promotion" in cas_doc
+
+    # 5. Historical predecessor-project banners and removal of unsupported hype phrases
+    for pred_doc in (exec_summary, prd_review, release_notes):
+        assert "Historical Predecessor-Project Document (Not Project Aether)" in pred_doc
+    assert "Historical Session Note (January 27, 2026)" in human_doc
+    for checked_text in (readme, claims_matrix, stage3_doc, cas_doc, human_doc, exec_summary):
+        assert "world's first" not in checked_text.lower()
+        assert "world’s first" not in checked_text.lower()
 

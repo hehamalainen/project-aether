@@ -1,8 +1,11 @@
-# Evolution Coding PRD - Comprehensive Review
+# Evolution Coding PRD - Comprehensive Review (Historical Predecessor-Project Review — January 3, 2026)
+
+> [!WARNING]
+> **Historical Predecessor-Project Document (Not Project Aether):** This January 3, 2026 document reviews a Product Requirements Document for an earlier, separate project concept (`Evolution Coding` / `IDASDLC`). It does **not** describe Project Aether's architecture or implemented features. It is preserved strictly as historical background. See [`README.md`](README.md) and [`docs/aether_claims_matrix_2026_04_13.md`](docs/aether_claims_matrix_2026_04_13.md) for Project Aether.
 
 **Reviewer:** Claude (Sonnet 4.5)
 **Date:** 2026-01-03
-**PRD Version:** Initial submission
+**PRD Version:** Initial submission (Predecessor `Evolution Coding` concept)
 **Safety/Analysis Depth Score:** 95/100
 
 ---
@@ -140,7 +143,7 @@ This is an exceptionally comprehensive and well-researched PRD for a recursive s
 **Strengths:**
 - Hard constraints are essential for safe RSI
 - Separating reasoning from rule enforcement is sound design
-- Formal verification provides strong safety guarantees
+- Symbolic constraint checking is a well-studied research direction for bounding agent actions
 
 **Concerns:**
 - **Rule specification:** Who writes the formal rules? How?
@@ -262,8 +265,8 @@ This is an exceptionally comprehensive and well-researched PRD for a recursive s
 - Implement two-tier sandboxing: loose sandbox for development, strict for deployment
 
 #### Neuro-Symbolic Constraints
-**Adequacy:** EXCELLENT in theory, UNPROVEN in practice
-- Formal verification is gold standard for safety
+**Adequacy:** INTERESTING in theory, UNPROVEN in practice
+- Symbolic rule checking is a strong theoretical concept, though not implemented in the prototype
 - However, LLM-compiled rules are concerning (as noted above)
 - Need human-in-the-loop for rule verification
 

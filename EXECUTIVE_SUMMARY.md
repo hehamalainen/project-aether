@@ -1,8 +1,11 @@
-# Evolution Coding - Executive Summary
+# Evolution Coding - Executive Summary (Historical Predecessor-Project Concept Note — January 2026)
 
-**Vision:** Build the world's first production-grade Recursive Self-Improvement (RSI) coding agent system
+> [!WARNING]
+> **Historical Predecessor-Project Document (Not Project Aether):** This document is a January 2026 vision and planning summary for a separate predecessor concept (`Evolution Coding` / `IDASDLC` — a proposed five-layer Recursive Self-Improvement coding agent system with MAP-Elites, Active Inference, Artificial Immune Systems, and Z3 neuro-symbolic constraints). **None of those `Evolution Coding` / `IDASDLC` subsystems are part of Project Aether.** This file is retained solely for historical context. For Project Aether's actual architecture, research-prototype scope, and verified evidence, see [`README.md`](README.md) and [`docs/aether_claims_matrix_2026_04_13.md`](docs/aether_claims_matrix_2026_04_13.md).
 
-**Status:** PRD Review Complete ✅ | Rating: 9.5/10 | Ready for Implementation 🚀
+**Historical Vision (Predecessor Concept):** Explore a Recursive Self-Improvement (RSI) coding agent architecture
+
+**Historical Status Note (January 2026):** Initial PRD Review Concept Note
 
 ---
 
@@ -29,7 +32,7 @@ Our bio-inspired design provides both capability and safety:
 | **2. Ontogeny** | Real-time cognition (Active Inference) | Seconds-Minutes | Agents minimize uncertainty, self-correct errors |
 | **3. Immunology** | Anomaly detection & self-repair | Milliseconds | Artificial immune system catches errors instantly |
 | **4. Culture** | Memetic knowledge inheritance | Per generation | Strategies accumulate, creating ratchet effect |
-| **5. Grounding** | Neuro-symbolic safety constraints | Per action | Hard guarantees via formal verification |
+| **5. Grounding** | Neuro-symbolic safety constraints | Per action | Proposed symbolic constraint checking (design concept) |
 
 **Antifragility:** Each layer turns stress into strength. Failures become training data, attacks strengthen defenses, chaos drives structural improvements.
 
@@ -129,14 +132,14 @@ Our bio-inspired design provides both capability and safety:
 
 ### vs. Academic RSI Research
 - **They:** Theoretical frameworks, toy domains
-- **We:** Production-grade system, real-world software engineering benchmarks
+- **Proposed Goal:** Applied software engineering benchmark evaluation
 
 ---
 
-## Technical Validation
+## Historical Predecessor Context (IDASDLC — Superseded)
 
-### Current Foundation (IDASDLC)
-Strong existing platform provides:
+### Predecessor Foundation (IDASDLC, January 2026)
+At the time this January 2026 concept note was written, the predecessor `IDASDLC` prototype included basic task orchestration and 14 unit tests (since superseded by Project Aether):
 - ✅ Task orchestration and execution
 - ✅ Validator policy framework
 - ✅ Auto-remediation capabilities
@@ -256,17 +259,17 @@ Before full commitment, three 1-week experiments validate core hypotheses:
 - **Phase 3-4:** 85%+ with safety guarantees
 - **Phase 5:** Continuous improvement, maintain SOTA as benchmarks evolve
 
-**Market Opportunity:** First production RSI system with safety guarantees. Enterprises will pay premium for agents that improve over time vs. static tools.
+**Research Hypothesis (Predecessor Concept):** Explore whether agents that accumulate strategy notes across runs can improve over static baselines.
 
 ---
 
-## Why This Will Succeed
+## Key Design Hypotheses (Predecessor Concept)
 
 ### 1. **Phased De-Risking**
-Each phase delivers standalone value. If Phase 4 (Active Inference) is too hard, we still have Phases 1-3.
+Each phase was proposed to be evaluated incrementally.
 
-### 2. **Strong Foundation**
-Current IDASDLC codebase is production-quality with tests, CI/CD, and clean architecture.
+### 2. **Existing Prototype Scaffolding**
+At the time, the predecessor `IDASDLC` prototype provided basic task/validator scaffolding with 14 unit tests.
 
 ### 3. **Research-Grounded**
 PRD integrates proven techniques (MAP-Elites, Active Inference, AIS, Constitutional AI) not speculative theory.
@@ -304,13 +307,9 @@ Hyperspeed development through autonomous agents building autonomous agents (met
 
 ---
 
-## Conclusion
+## Conclusion (Historical Concept Summary)
 
-Evolution Coding represents a **paradigm shift** in software development: from static tools to evolving agents. The PRD is exceptionally strong (9.5/10), the architecture is sound, and the current foundation is production-ready.
-
-**With agentic teaming, we can achieve hyperspeed development and deliver the world's first production RSI system.**
-
-**Recommendation: PROCEED with Phase 1 implementation immediately.**
+Evolution Coding was explored in January 2026 as a conceptual roadmap for evolving coding agents before work pivoted to **Project Aether** (an agent-native version-control research prototype). See [`README.md`](README.md) for Project Aether.
 
 ---
 

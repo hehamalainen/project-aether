@@ -84,12 +84,13 @@ API intake now supports a queue-depth valve to protect canonicalization liveness
 
 ## Code Style
 
-- Python 3.11+ with type hints
+- Python 3.11+ with type hints (tested with Python 3.14.3)
 - FastAPI for REST endpoints
 - SQLModel for database entities
 - Async/await patterns for I/O
 - Services use dependency injection via constructor
-- Rust 1.70+ for the high-performance CRDT backend workspace (`aether-rs`)
+- Rust 1.88+ for the CRDT backend workspace (`aether-rs`; `>=1.88` required by locked `home 0.5.12` in `aether-rs/Cargo.lock`, tested with `rustc 1.94.1`)
+- Node.js 20.9.0+ for the Next.js dashboard (`apps/aether_ui`; `>=20.9.0` required by `next@16.1.5`, tested with `Node.js v25.3.0`)
 
 ## Testing Instructions
 

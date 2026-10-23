@@ -1,34 +1,37 @@
-# Aether Readiness Package
+# Aether Readiness Package (Historical Internal Planning Snapshot — April 11, 2026)
 
 Date: 2026-04-11
-Audience: technical peer review, executive/investor review, internal planning
-Scope: current architecture, validated evidence, failure history, maturity assessment, and next milestones
+Audience: technical peer review, internal planning
+Scope: historical snapshot of Python control-plane soak testing, failure history, and engineering milestones as of April 11, 2026
+
+> [!IMPORTANT]
+> **Public Release Evidence & Research-Prototype Qualification:**
+> - **Research Prototype Status:** Project Aether is released as a **research prototype** (`0.1.0-alpha`), not a production-hardened or customer-ready system. For the authoritative public claims-to-evidence boundary, see [`README.md`](../README.md) and [`docs/aether_claims_matrix_2026_04_13.md`](aether_claims_matrix_2026_04_13.md).
+> - **Unbundled Historical Soak Summaries (`.pytest-artifacts/*`) vs. Committed Artifacts:** The `25m`, `60m`, `4h`, and `8h` soak runs referenced below were recorded in local `.pytest-artifacts/*` files and `<MX_SWARM_ROOT>/reports/*` files that are **excluded from git and are not independently verifiable from this release repository**. By contrast, the committed `1,000`-agent `60m` preflight artifact included in this repository ([`peer-review-artifacts/20260304/phase1/phase1-60m-preflight-20260304-121522.json`](../peer-review-artifacts/20260304/phase1/phase1-60m-preflight-20260304-121522.json)) **FAILED** its strict gate (`passed=false`, `submit_p95_ok=false`, P95 submit latency `5,759.84 ms` ~`5.76s` vs `5,000 ms` threshold, `99.55%` of `1,334,063` client attempts throttled at intake, `5,637` accepted, `1.15` proposals promoted/s across `684` promotion batches [`0.16` promotion batches/s]).
+> - **Subsequent Long-Run Soak Outcomes (April 11–12, 2026):** After this memo was drafted on April 11, the in-flight `12h` soak (`.pytest-artifacts/phase1-suite/soak-12h-mx-intake-r0420-20260411-day.json`) exposed a late-window `mark_evaluating` event-loop quarantine wave (`198` quarantines), and the follow-up `24h` soak (`.pytest-artifacts/phase1-suite/soak-24h-mx-intake-r0420-20260412.json`) completed without a quarantine wave but **failed** submit and promotion throughput thresholds.
 
 ---
 
-## 1. Executive Summary
+## 1. Executive Summary (Historical Snapshot as of 2026-04-11)
 
-Aether is no longer just a research thesis. It is a working agent-native repository control plane with real runtime evidence.
+Aether is an experimental agent-native repository control-plane prototype with local synthetic harness and unit/integration test evidence.
 
-What is already true:
+What was observed in local development runs up to 2026-04-11:
 
-- Aether has passed strict synthetic swarm validation at `1000` concurrent agents in controlled runs.
-- The earlier long-run snapshot recursion failure was isolated, reproduced, and removed from the hot path.
-- MX Swarm has already landed real model-generated artifacts into Aether, and Aether persisted and promoted them canonically.
-- The current integrated baseline has now passed clean `25m`, `60m`, `4h`, and `8h` strict validation windows.
+- In local synthetic swarm-harness runs (`1,000` simulated agents with `AETHER_ACCEPTED_TO_PROMOTION_RATIO_LIMIT=0.425`, where intake backpressure throttles `>99%` of client loop attempts so accepted throughput stays near `~0.85` proposals/s), local `25m`, `60m`, `4h`, and `8h` runs were recorded in `.pytest-artifacts/` (raw JSON files not bundled in this release).
+- The earlier long-run snapshot recursion failure was isolated, reproduced via `packages/aether/services/snapshot_reproducer.py`, and replaced with iterative chain resolution.
+- Separate local MX Swarm adapter experiments exercised proposal submission into an Aether instance (`<MX_SWARM_ROOT>/reports/*`, external to this repository and not bundled here; see `tests/aether/test_mx_swarm_adapter.py` for the in-repo deterministic adapter unit tests).
 
-What is not yet closed:
+What remained open / unverified:
 
-- a clean committed `12h` artifact is not frozen yet
-- a clean committed `24h` artifact is not frozen yet
-- the repository is still dirty and not yet pushed/safeguarded to GitHub
-- broader MX slice coverage and mixed-source stress are not yet the baseline story
+- no clean `10h` (`window_rho_ok = 1.011` failure), `12h` (`mark_evaluating` quarantine wave), or `24h` (throughput threshold failure) soak run passed
+- raw `.pytest-artifacts/*` soak dumps are not bundled in the public git repository
+- broader MX slice coverage and mixed-source stress were not established
 
-Practical conclusion:
+Practical conclusion (updated for public research release):
 
-- Aether is past research-only beta.
-- It is in validated-system / pre-production-hardening territory.
-- The remaining gap is long-window reliability proof, repository hygiene, and packaging for external scrutiny.
+- Aether is an **experimental research prototype** demonstrating CRDT-backed text/AST merging (Python), probabilistic conflict scoring, and OCC/advisory-locked PostgreSQL promotion mechanics (Rust).
+- Long-window high-agent scaling and multi-repo/single-repo contention remain active research challenges (see `docs/sprint4d_topology_baseline.md` and `docs/sprint4e_mitigation_experiments.md`).
 
 ---
 
@@ -83,25 +86,28 @@ Current test candidate for longer windows:
 
 ---
 
-## 3. What Is Proven
+## 3. Historical Local Soak Summaries vs. Committed Release Evidence
 
-### 3.1 Aether synthetic baseline
+### 3.1 Aether synthetic baseline (historical local `.pytest-artifacts/*` summaries — raw JSON not bundled)
 
-> **Note on Public Release Artifact Availability:** Raw `.pytest-artifacts/` directories are git-ignored and excluded from the public git tree. The table below records historical local soak runs (`AETHER_ACCEPTED_TO_PROMOTION_RATIO_LIMIT=0.425`, `1000` agents, `500` files) and their preserved summary metrics. For committed, directly inspectable JSON/log artifacts in this release tree (`peer-review-artifacts/20260304/phase1/phase1-60m-preflight-20260304-121522.json`, `qualification/semantic_suite/*.json`, `docs/evidence/`), see [`docs/aether_artifact_index_2026_04_13.md`](aether_artifact_index_2026_04_13.md).
+> **Note on Public Release Artifact Availability:** Raw `.pytest-artifacts/` directories are git-ignored and excluded from the public git tree, so the runs in the table below are **historical summaries only and cannot be independently verified from this release**. By contrast, the committed `1,000`-agent `60m` preflight artifact included in this repository ([`peer-review-artifacts/20260304/phase1/phase1-60m-preflight-20260304-121522.json`](../peer-review-artifacts/20260304/phase1/phase1-60m-preflight-20260304-121522.json)) **FAILED** (`passed=false`, `submit_p95_ok=false`, `p95_submit_latency_ms = 5759.84`, `99.55%` throttled at intake, `1.15` proposals promoted/s across `684` promotion batches [`0.16` promotion batches/s]). See [`docs/aether_artifact_index_2026_04_13.md`](aether_artifact_index_2026_04_13.md) and [`docs/aether_claims_matrix_2026_04_13.md`](aether_claims_matrix_2026_04_13.md) for the full breakdown.
 
-Validated historical soak reports on the integrated baseline:
+Recorded historical soak summaries on the Python synthetic harness (`AETHER_ACCEPTED_TO_PROMOTION_RATIO_LIMIT=0.425`, `1000` simulated agents, `500` files):
 
-| Window | Status | Historical Local Artifact Path (`.pytest-artifacts/` excluded from git) |
+| Window | Recorded Historical Status | Historical Local Artifact Path (`.pytest-artifacts/` excluded from git — not verifiable from this release) |
 |---|---|---|
-| `25m` strict | pass | `.pytest-artifacts/phase1-repro/mx-intake-cleanup-25m-r0425-20260325.json` |
-| `60m` strict | pass | `.pytest-artifacts/phase1-repro/mx-intake-cleanup-60m-r0425-20260325.json` |
-| `4h` strict diagnostic | pass | `.pytest-artifacts/phase1-suite/diag-4h-mark-evaluating-r0425-20260329c.json` |
-| `8h` strict soak | pass | `.pytest-artifacts/phase1-suite/soak-8h-mx-intake-r0425-20260331-stable.json` |
+| `25m` strict | recorded pass (unbundled) | `.pytest-artifacts/phase1-repro/mx-intake-cleanup-25m-r0425-20260325.json` |
+| `60m` strict | recorded pass (unbundled) | `.pytest-artifacts/phase1-repro/mx-intake-cleanup-60m-r0425-20260325.json` |
+| `4h` strict diagnostic | recorded pass (unbundled) | `.pytest-artifacts/phase1-suite/diag-4h-mark-evaluating-r0425-20260329c.json` |
+| `8h` strict soak | recorded pass (unbundled) | `.pytest-artifacts/phase1-suite/soak-8h-mx-intake-r0425-20260331-stable.json` |
+| `10h` strict soak | **failed** (`window_rho_ok = 1.011 > 1.0`) | `.pytest-artifacts/phase1-suite/soak-10h-mx-intake-r0425-20260408-retry.json` |
+| `12h` strict soak (`0.420`) | **bug exposed** (`198` `mark_evaluating` quarantines) | `.pytest-artifacts/phase1-suite/soak-12h-mx-intake-r0420-20260411-day.json` |
+| `24h` strict soak (`0.420`) | **failed** (submit & promotion throughput miss) | `.pytest-artifacts/phase1-suite/soak-24h-mx-intake-r0420-20260412.json` |
 
-Key confirmed properties from the clean `8h` soak:
+Recorded summary metrics from the historical `8h` soak notes (under aggressive intake throttling where accepted throughput is `< 1` proposal/s):
 
-- `submit_throughput = 0.8550`
-- `promotion_throughput = 0.8037`
+- `submit_throughput = 0.8550` accepted proposals/s
+- `promotion_throughput = 0.8037` proposals promoted/s (metric counts promoted proposals/s, not promotion batches/s)
 - `p95_submit_latency_ms = 1527.22`
 - `rho_window = 0.9961`
 - `backlog_end = 0`
@@ -110,23 +116,13 @@ Key confirmed properties from the clean `8h` soak:
 - `materialize_gate_workspace_quarantines = 0`
 - `quarantine_reasons_by_phase = {}`
 
-That is the current canonical long-run evidence.
+### 3.2 MX Swarm integration boundary (historical external workspace notes vs. in-repo adapter unit tests)
 
-### 3.2 MX Swarm integration boundary
+In-repo verifiable scope:
+- [`packages/aether/adapters/mx_swarm.py`](../packages/aether/adapters/mx_swarm.py) and [`tests/aether/test_mx_swarm_adapter.py`](../tests/aether/test_mx_swarm_adapter.py) verify deterministic schema translation from MX Swarm artifacts into Aether proposals on `HEAD`.
 
-The MX Swarm integration claim is also proven, though it belongs to the combined Aether + MX story rather than Aether-alone soak proof.
-
-What is proven:
-
-- deterministic adapter proof: green
-- canned worker proof: green
-- local model-backed live proof: green
-- real model-generated artifact landed in Aether and was promoted canonically
-
-Supporting Aether-side and combined-system docs:
-
-- `docs/aether_mx_swarm_state_and_gap_analysis_2026_03_15.md`
-- `docs/mx_aether_proof_ladder_and_slice_matrix_2026_03_15.md`
+Historical external workspace summaries (not bundled in this repository):
+- Live model-backed MX Swarm runs referenced in `docs/aether_mx_swarm_state_and_gap_analysis_2026_03_15.md` and `docs/mx_aether_proof_ladder_and_slice_matrix_2026_03_15.md` wrote their output reports to an external `<MX_SWARM_ROOT>/reports/` checkout that is **not** included in this repository and is therefore classified as an unbundled historical summary.
 
 ### 3.3 What is not yet proven
 
@@ -276,36 +272,15 @@ Status:
 
 ---
 
-## 6. Current Maturity Level
+## 6. Maturity Assessment (Updated for Public Research Release)
 
-### 6.1 Maturity assessment
+### 6.1 Research prototype positioning
 
-Aether is currently at:
+For public release, Aether is explicitly positioned as a **research prototype (`0.1.0-alpha`)**:
 
-- **Level 3 moving into Level 4**
-
-Working definition:
-
-- Level 3 = validated system prototype
-- Level 4 = pre-production reliability hardening
-
-### 6.2 Why it is not just research beta anymore
-
-Because the following are already true:
-
-- the core control-plane architecture works in runtime
-- major failure modes have been isolated and fixed, not hand-waved
-- the system has real strict runtime evidence at `1000` agents
-- the MX integration boundary is proven with real artifact landing and promotion
-
-### 6.3 Why it is not yet production mature
-
-Because the following are still missing:
-
-- clean committed `12h` and `24h` long-run proof
-- repository cleanup and secure remote backup
-- cleaner packaging of claims vs evidence for outside reviewers
-- broader workload coverage beyond the current validated baseline story
+- The Python reference backend and the Rust workspace (`aether-rs`) have asymmetric capabilities (see [`README.md`](../README.md)).
+- Committed 1,000-agent preflight evidence (`peer-review-artifacts/20260304/phase1/phase1-60m-preflight-20260304-121522.json`) shows strict SLO failure (`passed=false`, P95 submit latency `5.76s` vs `5.0s` limit, `99.55%` intake throttling), and longer historical local runs (`10h`, `12h`, `24h`) exposed `window_rho_ok` misses, `mark_evaluating` quarantine waves, and throughput degradation.
+- Subsequent Rust/PostgreSQL topology sweeps (`docs/sprint4d_topology_baseline.md`) demonstrated `90.1%–95.3%` HTTP `409` contention and `15 MB` to `340 MB` table bloat at 50–100 concurrent agents on a single repository.
 
 ---
 
@@ -383,21 +358,20 @@ Exit condition:
 
 ---
 
-## 9. What To Say Externally Right Now
+## 9. External Communication Boundary (Research Prototype Scope)
 
-Safe statement:
+Safe statement (grounded in committed release artifacts):
 
-- Aether is a working agent-native repository control plane.
-- The system has passed strict synthetic validation at `1000` concurrent agents through a clean `8h` soak on the current integrated baseline.
-- Aether has already proven real end-to-end integration with MX Swarm for model-generated artifact landing and promotion.
-- The system is no longer in idea-stage research. It is in runtime hardening and long-window validation.
+- Aether is an experimental agent-native version-control **research prototype** (`0.1.0-alpha`) with a Python reference backend and an experimental Rust/SQLite/PostgreSQL workspace (`aether-rs`).
+- On `HEAD`, readers can directly verify Python RGA + LibCST AST semantic merges, deterministic simulated synthesis-fallback merges (`model_version="1.0-fake"`), gate verification demos (`SIMULATED:` vs. `EXECUTED`), and Rust CRDT + PostgreSQL OCC concurrency tests.
+- Committed 1,000-agent preflight evidence (`peer-review-artifacts/20260304/phase1/phase1-60m-preflight-20260304-121522.json`) documents intake backpressure (`99.55%` throttled, `1.15` proposals promoted/s across `684` promotion batches [`0.16` promotion batches/s]) and a P95 submit-latency SLO failure (`5.76s` vs `5.0s` limit, `passed=false`), while historical multi-hour soak summaries (`25m`–`24h`) are preserved as unbundled engineering notes in `docs/aether_claims_matrix_2026_04_13.md`.
 
-Unsafe statement:
+Unsafe statement (do not claim):
 
-- do not claim production readiness
-- do not claim multi-day stability
-- do not claim broad workload coverage
-- do not claim the current dirty worktree as a final clean baseline freeze
+- do not claim production readiness or customer-ready operations
+- do not claim that the committed 1,000-agent preflight JSON passed (`passed=false`)
+- do not claim unbundled `.pytest-artifacts/*` or `<MX_SWARM_ROOT>` runs as independently verifiable release proofs
+- do not claim live LLM synthesis or full Python feature parity on the Rust server
 
 ---
 

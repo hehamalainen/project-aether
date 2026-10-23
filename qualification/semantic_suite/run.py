@@ -366,8 +366,9 @@ async def run_case_2(session, storage_path):
 
 async def run_case_3(session, storage_path):
     """
-    Shape 3: synthesis_fallback_merges (overlapping changes on the same method requiring LLM reconciliation).
-    Must resolve via synthesis_merge.
+    Shape 3: synthesis_fallback_merges (overlapping changes on the same method routed to the deterministic
+    synthesis-worker simulator in packages/aether/synthesis_worker/main.py, model_version='1.0-fake',
+    with no-op echo 'ok' shell gates). Must resolve via synthesis_merge.
     """
     eb = EventBus()
     repo_service = RepositoryService(session, storage_path)
