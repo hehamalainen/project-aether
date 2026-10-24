@@ -537,7 +537,12 @@ def snapshot(
 def promote(
     repo_id: str = typer.Option(..., "--repo", "-r", help="Repository ID"),
     proposal_ids: str = typer.Option(..., "--proposals", "-p", help="Proposal IDs (comma-separated)"),
-    force: bool = typer.Option(False, "--force", "-f", help="Force promotion even if gates fail"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Deprecated compatibility flag (required gates remain fail-closed)",
+    ),
 ):
     """Request promotion of proposals."""
     client = get_client()
@@ -678,7 +683,11 @@ def git_export(
     
     try:
         from packages.aether.git.exporter import GitExporter
-        from packages.aether.crdt.document_store import DocumentStore
+        from packages.aether.crdt.document_store import (
+            DocumentStore,
+            resolve_contained_path,
+            safe_extract_tarball,
+        )
     except ImportError as e:
         console.print(f"[red]Import error: {e}[/red]")
         raise typer.Exit(1)
@@ -713,17 +722,18 @@ def git_export(
         import io
         
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Extract tarball
-            tarball = tarfile.open(fileobj=io.BytesIO(snapshot_response.content), mode="r:gz")
-            tarball.extractall(temp_dir)
+            # Extract tarball safely
+            with tarfile.open(fileobj=io.BytesIO(snapshot_response.content), mode="r:gz") as tarball:
+                safe_extract_tarball(tarball, temp_dir)
             
             # Create document store from extracted files
             doc_store = DocumentStore(replica_id=f"export_{repo_id}")
             
             temp_path = PyPath(temp_dir)
             for file_path in temp_path.rglob("*"):
-                if file_path.is_file():
-                    rel_path = str(file_path.relative_to(temp_path))
+                if not file_path.is_symlink() and file_path.is_file():
+                    rel_path = file_path.relative_to(temp_path).as_posix()
+                    resolve_contained_path(temp_path, rel_path)
                     try:
                         content = file_path.read_text(encoding="utf-8")
                         doc_store.set_file(rel_path, content)

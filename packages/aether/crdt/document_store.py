@@ -20,6 +20,11 @@ import time
 
 from .rga import RGADocument, RGAOperation
 from .structured_doc import StructuredDocument
+from .path_safety import (
+    resolve_contained_path,
+    safe_extract_tarball,
+    validate_repo_relative_path,
+)
 from ..models.aip import AIPMutation, parse_aip_mutation_envelope
 
 
@@ -36,6 +41,9 @@ class FileDocument:
     node_modifications: dict[str, set[str]] = field(default_factory=dict)
     # Last known hash for change detection
     last_hash: str = ""
+
+    def __post_init__(self) -> None:
+        self.path = validate_repo_relative_path(self.path)
 
     def get_content(self) -> str:
         if self.structured:
@@ -77,6 +85,16 @@ class DiffHunk:
     lines: list[str]  # Lines with +/- prefix
 
 
+def _extract_diff_header_path(raw_path: str, prefix: str) -> Optional[str]:
+    """Extract and validate a path from a --- or +++ unified diff header."""
+    cleaned = raw_path.split("\t", 1)[0].strip()
+    if not cleaned or cleaned == "/dev/null":
+        return None
+    if cleaned.startswith(prefix):
+        cleaned = cleaned[len(prefix):]
+    return validate_repo_relative_path(cleaned)
+
+
 def parse_unified_diff(diff_text: str) -> dict[str, list[DiffHunk]]:
     """
     Parse a unified diff into per-file hunks.
@@ -103,19 +121,39 @@ def parse_unified_diff(diff_text: str) -> dict[str, list[DiffHunk]]:
             current_hunks = []
             # Extract filename from "diff --git a/path b/path"
             match = re.match(r"diff --git a/(.+) b/(.+)", line)
-            if match:
-                current_file = match.group(2)
+            if not match:
+                raise ValueError(f"Malformed diff header: {line}")
+            old_path = validate_repo_relative_path(match.group(1))
+            new_path = validate_repo_relative_path(match.group(2))
+            if old_path != new_path:
+                validate_repo_relative_path(old_path)
+            current_file = new_path
             i += 1
             continue
 
         # --- and +++ headers
-        if line.startswith("---") or line.startswith("+++"):
-            # Could extract filename from here too if needed
+        if line.startswith("--- ") or line == "---":
+            if line.startswith("--- "):
+                _extract_diff_header_path(line[4:], "a/")
+            i += 1
+            continue
+
+        if line.startswith("+++ ") or line == "+++":
+            if line.startswith("+++ "):
+                plus_path = _extract_diff_header_path(line[4:], "b/")
+                if plus_path is not None:
+                    if current_file is not None and current_file != plus_path:
+                        raise ValueError(
+                            f"Diff header path mismatch: {current_file!r} vs {plus_path!r}"
+                        )
+                    current_file = plus_path
             i += 1
             continue
 
         # Hunk header
         if line.startswith("@@"):
+            if current_file is None:
+                raise ValueError(f"Unified diff hunk missing target file header: {line}")
             # Parse @@ -old_start,old_count +new_start,new_count @@
             match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
             if not match:
@@ -198,8 +236,17 @@ class DocumentStore:
     - Materialize snapshots
     """
 
-    def __init__(self, repo_id: str, base_path: Optional[str] = None):
-        self.repo_id = repo_id
+    def __init__(
+        self,
+        repo_id: Optional[str] = None,
+        base_path: Optional[str] = None,
+        *,
+        replica_id: Optional[str] = None,
+    ):
+        resolved_repo_id = repo_id if repo_id is not None else replica_id
+        if not resolved_repo_id:
+            raise ValueError("DocumentStore requires repo_id or replica_id")
+        self.repo_id = resolved_repo_id
         self.base_path = Path(base_path) if base_path else None
         self.documents: dict[str, FileDocument] = {}
         self._shared_paths: set[str] = set()
@@ -255,6 +302,7 @@ class DocumentStore:
 
     def get_document(self, path: str) -> FileDocument:
         """Get or create a document for a file path."""
+        path = validate_repo_relative_path(path)
         if path not in self.documents:
             replica_id = self._get_replica_id()
             doc = RGADocument(replica_id=replica_id)
@@ -270,20 +318,25 @@ class DocumentStore:
 
     def has_document(self, path: str) -> bool:
         """Check if a document exists."""
-        return path in self.documents
+        try:
+            normalized = validate_repo_relative_path(path)
+        except ValueError:
+            return False
+        return normalized in self.documents
 
     def load_from_disk(self, relative_path: str) -> FileDocument:
         """Load a file from disk into a CRDT document."""
         if not self.base_path:
             raise ValueError("No base path configured")
 
-        full_path = self.base_path / relative_path
+        normalized = validate_repo_relative_path(relative_path)
+        full_path = resolve_contained_path(self.base_path, normalized)
         if not full_path.exists():
             # Return empty document
-            return self.get_document(relative_path)
+            return self.get_document(normalized)
 
         content = full_path.read_text(encoding="utf-8", errors="replace")
-        file_doc = self.get_document(relative_path)
+        file_doc = self.get_document(normalized)
         if file_doc.structured:
             file_doc.structured.set_content(content)
         self._replace_document_text(file_doc, content)
@@ -299,9 +352,15 @@ class DocumentStore:
         EXCLUDED_FILES = {".DS_Store", "package-lock.json", "yarn.lock"}
 
         count = 0
-        for root, dirs, files in os.walk(self.base_path):
-            # Skip hidden and excluded directories
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in EXCLUDED_DIRS]
+        for root, dirs, files in os.walk(self.base_path, followlinks=False):
+            # Skip hidden, excluded, and symlinked directories
+            dirs[:] = [
+                d
+                for d in dirs
+                if not d.startswith(".")
+                and d not in EXCLUDED_DIRS
+                and not (Path(root) / d).is_symlink()
+            ]
 
             for fname in files:
                 if fname.startswith(".") or fname in EXCLUDED_FILES:
@@ -312,7 +371,9 @@ class DocumentStore:
                         continue
 
                 full_path = Path(root) / fname
-                rel_path = str(full_path.relative_to(self.base_path))
+                if full_path.is_symlink():
+                    continue
+                rel_path = full_path.relative_to(self.base_path).as_posix()
 
                 self.load_from_disk(rel_path)
                 count += 1
@@ -484,7 +545,8 @@ class DocumentStore:
 
     def apply_full_file(self, file_path: str, content: str, proposal_id: str) -> None:
         """Apply a full file replacement."""
-        file_doc = self.get_document(file_path)
+        normalized_path = validate_repo_relative_path(file_path)
+        file_doc = self.get_document(normalized_path)
         
         if file_doc.structured:
             # Decompose new content
@@ -502,6 +564,10 @@ class DocumentStore:
             
         file_doc.proposal_history.append(proposal_id)
         file_doc.last_hash = file_doc.get_hash()
+
+    def set_file(self, file_path: str, content: str, proposal_id: str = "import") -> None:
+        """Set full content for a repository-relative file path."""
+        self.apply_full_file(file_path, content, proposal_id)
 
     @staticmethod
     def _resolve_unique_node_id(structured: StructuredDocument, preferred_node_id: str) -> str:
@@ -604,17 +670,23 @@ class DocumentStore:
         Returns: (file_count, total_bytes)
         """
         started = time.perf_counter()
+        output_path = Path(output_path)
+        if output_path.is_symlink():
+            raise ValueError(f"Snapshot output_path must not be a symlink: {output_path}")
         output_path.mkdir(parents=True, exist_ok=True)
+        output_resolved = output_path.resolve()
 
         file_count = 0
         total_bytes = 0
 
         for rel_path, file_doc in self.documents.items():
+            normalized_rel = validate_repo_relative_path(rel_path)
             content = file_doc.get_content()
-            full_path = output_path / rel_path
+            full_path = resolve_contained_path(output_resolved, normalized_rel)
 
-            # Create parent directories
+            # Create parent directories and re-verify symlink containment
             full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path = resolve_contained_path(output_resolved, normalized_rel)
 
             full_path.write_text(content, encoding="utf-8")
             file_count += 1
@@ -719,7 +791,10 @@ class DocumentStore:
         """Deserialize a document store."""
         store = cls(d["repo_id"], d.get("base_path"))
         store._replica_counter = d.get("replica_counter", 0)
-        store.documents = {k: FileDocument.from_dict(v) for k, v in d.get("documents", {}).items()}
+        store.documents = {
+            validate_repo_relative_path(k): FileDocument.from_dict(v)
+            for k, v in d.get("documents", {}).items()
+        }
         store._shared_paths = set()
         return store
 
@@ -727,8 +802,17 @@ class DocumentStore:
         """Get list of all file paths."""
         return list(self.documents.keys())
 
+    def list_files(self) -> list[str]:
+        """Alias for get_file_list()."""
+        return self.get_file_list()
+
     def get_file_content(self, path: str) -> Optional[str]:
         """Get content of a specific file."""
-        if path in self.documents:
-            return self.documents[path].get_content()
+        normalized = validate_repo_relative_path(path)
+        if normalized in self.documents:
+            return self.documents[normalized].get_content()
         return None
+
+    def get_file(self, path: str) -> Optional[str]:
+        """Alias for get_file_content()."""
+        return self.get_file_content(path)

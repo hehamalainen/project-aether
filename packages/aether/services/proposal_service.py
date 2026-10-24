@@ -50,7 +50,11 @@ from ..models.entities import (
 )
 from ..models.aip import extract_aip_paths_and_symbols
 from ..models.events import AetherEvent, EventType
-from ..crdt.document_store import DocumentStore, parse_unified_diff
+from ..crdt.document_store import (
+    DocumentStore,
+    parse_unified_diff,
+    validate_repo_relative_path,
+)
 from .repository_service import RepositoryService
 from .event_bus import EventBus, create_proposal_event
 from .symbol_adapters import extract_symbol_spans, find_symbol_at_line
@@ -671,18 +675,42 @@ class ProposalService:
 
     def _normalize_change_payload(self, proposal_data: ProposalCreate) -> ProposalCreate:
         """Validate/normalize change payloads before persistence."""
-        proposal_data = proposal_data.model_copy(
-            update={"source": self._normalize_source(proposal_data.source)}
-        )
+        normalized_affected = [
+            validate_repo_relative_path(path)
+            for path in (proposal_data.affected_paths or [])
+        ]
+        updates: dict[str, Any] = {
+            "source": self._normalize_source(proposal_data.source),
+            "affected_paths": normalized_affected,
+        }
+        if proposal_data.target_paths is not None:
+            updates["target_paths"] = [
+                validate_repo_relative_path(path)
+                for path in proposal_data.target_paths
+            ]
+        proposal_data = proposal_data.model_copy(update=updates)
+
         if proposal_data.change_type not in self._SUPPORTED_CHANGE_TYPES:
             raise ValueError(f"Unsupported change_type: {proposal_data.change_type}")
 
         if proposal_data.change_type in {"aip.v0", "aip_mutation"}:
             mutation_paths, _ = extract_aip_paths_and_symbols(proposal_data.change_content)
-            merged_paths = sorted(set(proposal_data.affected_paths) | mutation_paths)
+            validated_mutations = {validate_repo_relative_path(p) for p in mutation_paths}
+            merged_paths = sorted(set(normalized_affected) | validated_mutations)
             if not merged_paths:
                 raise ValueError("AIP payload must include at least one mutated path")
             return proposal_data.model_copy(update={"affected_paths": merged_paths})
+
+        if proposal_data.change_type == "unified_diff":
+            parsed_diff = parse_unified_diff(proposal_data.change_content)
+            diff_paths = {validate_repo_relative_path(p) for p in parsed_diff.keys()}
+            merged_paths = sorted(set(normalized_affected) | diff_paths)
+            return proposal_data.model_copy(update={"affected_paths": merged_paths})
+
+        if proposal_data.change_type == "full_file":
+            if not normalized_affected:
+                raise ValueError("full_file proposal must specify at least one affected_path")
+            return proposal_data
 
         return proposal_data
 
@@ -1693,20 +1721,29 @@ class ProposalService:
         self,
         updates: list[tuple[str, ProposalStatus, Optional[str]]],
         commit: bool = True,
+        publish_events: bool = True,
+        deferred_events: Optional[list[AetherEvent]] = None,
+        deferred_logs: Optional[list[tuple[str, str, str, Optional[str]]]] = None,
     ) -> int:
         """Update multiple proposal statuses with one commit and publish events."""
         logs, events = self._apply_status_updates(updates, commit=commit)
-        for event in events:
-            await self.event_bus.publish(event)
+        if deferred_events is not None:
+            deferred_events.extend(events)
+        if deferred_logs is not None:
+            deferred_logs.extend(logs)
 
-        for proposal_id, old_status, new_status, reason in logs:
-            logger.info(
-                "proposal_status_updated",
-                proposal_id=proposal_id,
-                old_status=old_status,
-                new_status=new_status,
-                reason=reason,
-            )
+        if publish_events:
+            for event in events:
+                await self.event_bus.publish(event)
+
+            for proposal_id, old_status, new_status, reason in logs:
+                logger.info(
+                    "proposal_status_updated",
+                    proposal_id=proposal_id,
+                    old_status=old_status,
+                    new_status=new_status,
+                    reason=reason,
+                )
         return len(logs)
 
     def get_conflict_set(self, conflict_set_id: str) -> Optional[ConflictSet]:
@@ -1740,6 +1777,9 @@ class ProposalService:
         chosen_proposal_id: str,
         commit: bool = True,
         semantic_merge_enabled: bool = False,
+        publish_events: bool = True,
+        deferred_events: Optional[list[AetherEvent]] = None,
+        deferred_logs: Optional[list[tuple[str, str, str, Optional[str]]]] = None,
     ) -> bool:
         """
         Resolve a conflict set by choosing a winning proposal.
@@ -1797,7 +1837,13 @@ class ProposalService:
                 if p.id != chosen_proposal_id and p.status in {ProposalStatus.PENDING, ProposalStatus.EVALUATING}
             ]
 
-        await self.update_status_many(updates, commit=commit)
+        await self.update_status_many(
+            updates,
+            commit=commit,
+            publish_events=publish_events,
+            deferred_events=deferred_events,
+            deferred_logs=deferred_logs,
+        )
 
         # Update conflict set
         conflict_set.active_choice_id = chosen_proposal_id
@@ -1809,24 +1855,25 @@ class ProposalService:
         else:
             self.session.flush()
 
-        # Publish event
-        await self.event_bus.publish(
-            create_proposal_event(
-                EventType.CONFLICT_RESOLVED,
-                conflict_set.repo_id,
-                chosen_proposal_id,
-                "",  # agent_id not relevant here
-                [conflict_set.path],
-                conflict_set_id=conflict_set_id,
-                superseded_proposals=[pid for pid in proposal_ids if pid != chosen_proposal_id],
-            )
-        )
-
-        logger.info(
-            "conflict_set_resolved",
+        conflict_event = create_proposal_event(
+            EventType.CONFLICT_RESOLVED,
+            conflict_set.repo_id,
+            chosen_proposal_id,
+            "",  # agent_id not relevant here
+            [conflict_set.path],
             conflict_set_id=conflict_set_id,
-            chosen_proposal_id=chosen_proposal_id,
+            superseded_proposals=[pid for pid in proposal_ids if pid != chosen_proposal_id],
         )
+        if deferred_events is not None:
+            deferred_events.append(conflict_event)
+
+        if publish_events:
+            await self.event_bus.publish(conflict_event)
+            logger.info(
+                "conflict_set_resolved",
+                conflict_set_id=conflict_set_id,
+                chosen_proposal_id=chosen_proposal_id,
+            )
 
         return True
 

@@ -23,7 +23,11 @@ from ..models.entities import (
     RepoConfig,
     generate_id,
 )
-from ..crdt.document_store import DocumentStore
+from ..crdt.document_store import (
+    DocumentStore,
+    resolve_contained_path,
+    validate_repo_relative_path,
+)
 
 logger = structlog.get_logger()
 
@@ -55,13 +59,21 @@ class RepositoryService:
     def _iter_snapshot_files(self, snapshot_path: Path) -> dict[str, Path]:
         """List concrete files stored in a snapshot directory."""
         files: dict[str, Path] = {}
+        if snapshot_path.is_symlink():
+            return files
+        snapshot_resolved = snapshot_path.resolve()
         for file_path in snapshot_path.rglob("*"):
-            if not file_path.is_file():
+            if file_path.is_symlink() or not file_path.is_file():
                 continue
-            rel_path = str(file_path.relative_to(snapshot_path))
+            rel_path = file_path.relative_to(snapshot_path).as_posix()
             if rel_path == SNAPSHOT_MANIFEST_FILENAME:
                 continue
-            files[rel_path] = file_path
+            try:
+                normalized_rel = validate_repo_relative_path(rel_path)
+                contained_path = resolve_contained_path(snapshot_resolved, normalized_rel)
+            except ValueError:
+                continue
+            files[normalized_rel] = contained_path
         return files
 
     def _resolve_snapshot_files(
@@ -111,14 +123,22 @@ class RepositoryService:
 
             for rel_path in manifest.get("deleted_paths", []):
                 if isinstance(rel_path, str):
-                    files.pop(rel_path, None)
+                    try:
+                        normalized_del = validate_repo_relative_path(rel_path)
+                    except ValueError:
+                        continue
+                    files.pop(normalized_del, None)
 
             for rel_path in manifest.get("changed_paths", []):
                 if not isinstance(rel_path, str):
                     continue
-                file_path = snapshot_path / rel_path
-                if file_path.exists() and file_path.is_file():
-                    files[rel_path] = file_path
+                try:
+                    normalized_rel = validate_repo_relative_path(rel_path)
+                    file_path = resolve_contained_path(snapshot_path, normalized_rel)
+                except ValueError:
+                    continue
+                if file_path.exists() and not file_path.is_symlink() and file_path.is_file():
+                    files[normalized_rel] = file_path
 
         return files
 

@@ -33,7 +33,11 @@ from ..models.entities import (
     generate_id,
 )
 from ..models.events import EventType
-from ..crdt.document_store import DocumentStore
+from ..crdt.document_store import (
+    DocumentStore,
+    resolve_contained_path,
+    validate_repo_relative_path,
+)
 from .event_bus import EventBus
 
 logger = structlog.get_logger()
@@ -158,13 +162,21 @@ class SnapshotService:
     def _iter_snapshot_files(self, snapshot_path: Path) -> dict[str, Path]:
         """List local files stored in a snapshot directory (excluding metadata)."""
         files: dict[str, Path] = {}
+        if snapshot_path.is_symlink():
+            return files
+        snapshot_resolved = snapshot_path.resolve()
         for file_path in snapshot_path.rglob("*"):
-            if not file_path.is_file():
+            if file_path.is_symlink() or not file_path.is_file():
                 continue
-            rel_path = str(file_path.relative_to(snapshot_path))
+            rel_path = file_path.relative_to(snapshot_path).as_posix()
             if rel_path == SNAPSHOT_MANIFEST_FILENAME:
                 continue
-            files[rel_path] = file_path
+            try:
+                normalized_rel = validate_repo_relative_path(rel_path)
+                contained_path = resolve_contained_path(snapshot_resolved, normalized_rel)
+            except ValueError:
+                continue
+            files[normalized_rel] = contained_path
         return files
 
     def _resolve_base_snapshot_id(self, head_id: Optional[str]) -> Optional[str]:
@@ -345,14 +357,22 @@ class SnapshotService:
             changed_paths = manifest.get("changed_paths", [])
             for rel_path in deleted_paths:
                 if isinstance(rel_path, str):
-                    index.pop(rel_path, None)
+                    try:
+                        normalized_del = validate_repo_relative_path(rel_path)
+                    except ValueError:
+                        continue
+                    index.pop(normalized_del, None)
 
             for rel_path in changed_paths:
                 if not isinstance(rel_path, str):
                     continue
-                file_path = snapshot_path / rel_path
-                if file_path.exists() and file_path.is_file():
-                    index[rel_path] = file_path
+                try:
+                    normalized_rel = validate_repo_relative_path(rel_path)
+                    file_path = resolve_contained_path(snapshot_path, normalized_rel)
+                except ValueError:
+                    continue
+                if file_path.exists() and not file_path.is_symlink() and file_path.is_file():
+                    index[normalized_rel] = file_path
 
         # Cache the result before returning
         self._store_snapshot_file_index(snapshot_id, index)
@@ -431,21 +451,34 @@ class SnapshotService:
                 deleted_file_count,
             )
         """
+        if snapshot_path.is_symlink():
+            raise ValueError(f"Delta snapshot_path must not be a symlink: {snapshot_path}")
         snapshot_path.mkdir(parents=True, exist_ok=True)
-        current_paths = set(document_store.documents.keys())
+        snapshot_resolved = snapshot_path.resolve()
+        current_paths = {
+            validate_repo_relative_path(rel_path)
+            for rel_path in document_store.documents.keys()
+        }
+        normalized_base_paths = {
+            validate_repo_relative_path(rel_path) for rel_path in base_paths
+        }
+        normalized_changed_paths = {
+            validate_repo_relative_path(rel_path) for rel_path in changed_paths
+        }
         write_paths = sorted(
             rel_path
             for rel_path in current_paths
-            if rel_path in changed_paths or rel_path not in base_paths
+            if rel_path in normalized_changed_paths or rel_path not in normalized_base_paths
         )
-        deleted_paths = sorted(base_paths - current_paths)
+        deleted_paths = sorted(normalized_base_paths - current_paths)
 
         for rel_path in write_paths:
             file_doc = document_store.documents.get(rel_path)
             if not file_doc:
                 continue
-            out_path = snapshot_path / rel_path
+            out_path = resolve_contained_path(snapshot_resolved, rel_path)
             out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path = resolve_contained_path(snapshot_resolved, rel_path)
             content = file_doc.get_content()
             out_path.write_text(content, encoding="utf-8")
 
@@ -798,16 +831,14 @@ class SnapshotService:
 
     def get_file_content(self, snapshot_id: str, file_path: str) -> Optional[str]:
         """Get content of a specific file from a snapshot."""
-        if not file_path or Path(file_path).is_absolute():
-            return None
-
-        normalized = str(Path(file_path))
-        if normalized.startswith(".."):
+        try:
+            normalized = validate_repo_relative_path(file_path)
+        except ValueError:
             return None
 
         file_index = self._resolve_snapshot_file_index(snapshot_id)
         full_path = file_index.get(normalized)
-        if not full_path:
+        if not full_path or full_path.is_symlink():
             return None
 
         try:
@@ -825,11 +856,18 @@ class SnapshotService:
         if not file_index:
             return False
 
+        target_path = Path(target_path)
+        if target_path.is_symlink():
+            raise ValueError(f"Target path must not be a symlink: {target_path}")
         target_path.mkdir(parents=True, exist_ok=True)
+        target_resolved = target_path.resolve()
 
         for rel_path, source_path in file_index.items():
-            dest_path = target_path / rel_path
+            if source_path.is_symlink():
+                raise ValueError(f"Refusing to clone symlink source: {source_path}")
+            dest_path = resolve_contained_path(target_resolved, rel_path)
             dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path = resolve_contained_path(target_resolved, rel_path)
             shutil.copy2(source_path, dest_path)
 
         return True
@@ -846,10 +884,14 @@ class SnapshotService:
         workspace_root.mkdir(parents=True, exist_ok=True)
         workspace_path = workspace_root / f"{snapshot_id}_{uuid4().hex[:8]}"
         workspace_path.mkdir(parents=True, exist_ok=True)
+        workspace_resolved = workspace_path.resolve()
 
         for rel_path, source_path in file_index.items():
-            dest_path = workspace_path / rel_path
+            if source_path.is_symlink():
+                raise ValueError(f"Refusing to materialize symlink source: {source_path}")
+            dest_path = resolve_contained_path(workspace_resolved, rel_path)
             dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path = resolve_contained_path(workspace_resolved, rel_path)
             try:
                 os.link(source_path, dest_path)
             except OSError:

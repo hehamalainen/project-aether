@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import PurePosixPath
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from ..crdt.path_safety import validate_repo_relative_path
 
 
 AIP_SCHEMA_VERSION = "aip.v0"
@@ -23,14 +24,8 @@ class AIPMutation(BaseModel):
 
     @model_validator(mode="after")
     def _validate_mutation(self) -> "AIPMutation":
-        path = self.path.strip()
+        path = validate_repo_relative_path(self.path)
         node_id = self.node_id.strip()
-        if not path:
-            raise ValueError("path must not be empty")
-        if path.startswith("/"):
-            raise ValueError("path must be repository-relative")
-        if ".." in PurePosixPath(path).parts:
-            raise ValueError("path traversal is not allowed")
         if not node_id:
             raise ValueError("node_id must not be empty")
 

@@ -13,7 +13,11 @@ from typing import Optional
 from datetime import datetime
 import structlog
 
-from ..crdt.document_store import DocumentStore
+from ..crdt.document_store import (
+    DocumentStore,
+    resolve_contained_path,
+    validate_repo_relative_path,
+)
 from ..models.entities import Snapshot, Promotion
 
 logger = structlog.get_logger()
@@ -68,10 +72,12 @@ class GitExporter:
         # Write all files from document store
         files_written = 0
         for file_path in document_store.list_files():
-            content = document_store.get_file(file_path)
+            normalized_rel = validate_repo_relative_path(file_path)
+            content = document_store.get_file(normalized_rel)
             if content is not None:
-                full_path = output_path / file_path
+                full_path = resolve_contained_path(output_path, normalized_rel)
                 full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path = resolve_contained_path(output_path, normalized_rel)
                 full_path.write_text(content, encoding="utf-8")
                 files_written += 1
         
@@ -188,10 +194,12 @@ class GitExporter:
             
             # Write files
             for file_path in doc_store.list_files():
-                content = doc_store.get_file(file_path)
+                normalized_rel = validate_repo_relative_path(file_path)
+                content = doc_store.get_file(normalized_rel)
                 if content is not None:
-                    full_path = output_path / file_path
+                    full_path = resolve_contained_path(output_path, normalized_rel)
                     full_path.parent.mkdir(parents=True, exist_ok=True)
+                    full_path = resolve_contained_path(output_path, normalized_rel)
                     full_path.write_text(content, encoding="utf-8")
             
             # Stage and commit

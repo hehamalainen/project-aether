@@ -1,0 +1,636 @@
+"""Regression tests for release security boundaries and SQLite promotion atomicity."""
+
+from __future__ import annotations
+
+import io
+import json
+import tarfile
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+import pytest
+from sqlmodel import SQLModel, Session, create_engine, select, text
+from typer.testing import CliRunner
+
+from apps.aether_cli.main import app as cli_app
+from packages.aether.api import routes
+from packages.aether.crdt.document_store import (
+    DocumentStore,
+    parse_unified_diff,
+    resolve_contained_path,
+    safe_extract_tarball,
+    validate_repo_relative_path,
+)
+from packages.aether.git.exporter import GitExporter
+from packages.aether.models.entities import (
+    AetherHead,
+    AgentMetric,
+    ConflictSet,
+    GateConfig,
+    OperationGraphNode,
+    Promotion,
+    Proposal,
+    ProposalCreate,
+    ProposalStatus,
+)
+from packages.aether.models.events import AetherEvent, EventType
+from packages.aether.services.event_bus import EventBus
+from packages.aether.services.gate_runner import GateRunner
+from packages.aether.services.promotion_engine import PromotionEngine, PromotionPhaseError
+from packages.aether.services.proposal_service import ProposalService
+from packages.aether.services.repository_service import RepositoryService
+from packages.aether.services.snapshot_service import SnapshotService
+
+
+@pytest.fixture
+def api_env(tmp_path: Path):
+    """Create a file-backed SQLite FastAPI test environment."""
+    prev_engine = routes._engine
+    prev_event_bus = routes._event_bus
+    prev_storage_path = routes._storage_path
+    db_file = tmp_path / "test_release_security.db"
+    storage_dir = tmp_path / "aether_storage"
+    engine = create_engine(
+        f"sqlite:///{db_file}",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(engine)
+    event_bus = EventBus()
+    routes.set_services(engine, event_bus, storage_dir)
+
+    app = FastAPI()
+    app.include_router(routes.router)
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        yield {
+            "client": client,
+            "engine": engine,
+            "event_bus": event_bus,
+            "storage_dir": storage_dir,
+            "tmp_path": tmp_path,
+        }
+    finally:
+        routes.set_services(prev_engine, prev_event_bus, prev_storage_path)
+
+
+class TestProposalPathContainment:
+    """Blocker 1: Proposal paths must be validated across all formats and contained on write."""
+
+    @pytest.mark.parametrize(
+        "bad_path",
+        [
+            "",
+            "/tmp/outside.py",
+            "../outside.py",
+            "sub/../../outside.py",
+            "./inside.py",
+            "sub/./inside.py",
+            "sub//inside.py",
+            "sub\\inside.py",
+            "~/outside.py",
+            ".git/config",
+            "sub/.git/hooks/pre-commit",
+            ".aether_snapshot_manifest.json",
+            "sub/.aether_snapshot_manifest.json",
+            "C:outside.py",
+        ],
+    )
+    def test_validate_repo_relative_path_rejects_unsafe_paths(self, bad_path: str) -> None:
+        with pytest.raises(ValueError):
+            validate_repo_relative_path(bad_path)
+
+    def test_api_rejects_traversal_and_absolute_paths_across_all_change_types(
+        self, api_env
+    ) -> None:
+        client: TestClient = api_env["client"]
+        tmp_path: Path = api_env["tmp_path"]
+        outside_target = tmp_path / "outside_victim.py"
+        outside_target.write_text("CANARY_INTACT\n", encoding="utf-8")
+
+        repo_resp = client.post(
+            "/v1/repos",
+            json={
+                "name": "path-containment-repo",
+                "config": {"gates": []},
+            },
+        )
+        assert repo_resp.status_code == 200
+        repo_id = repo_resp.json()["id"]
+
+        # 1. Traversal in affected_paths
+        resp = client.post(
+            f"/v1/repos/{repo_id}/proposals",
+            json={
+                "agent_id": "attacker",
+                "change_type": "full_file",
+                "change_content": "OVERWRITTEN\n",
+                "affected_paths": ["../outside_victim.py"],
+                "confidence_score": 0.9,
+            },
+        )
+        assert resp.status_code == 400
+
+        # 2. Absolute path in affected_paths
+        resp = client.post(
+            f"/v1/repos/{repo_id}/proposals",
+            json={
+                "agent_id": "attacker",
+                "change_type": "full_file",
+                "change_content": "OVERWRITTEN\n",
+                "affected_paths": [str(outside_target)],
+                "confidence_score": 0.9,
+            },
+        )
+        assert resp.status_code == 400
+
+        # 3. Benign affected_paths=["safe.py"] with traversal in unified_diff headers
+        traversal_diff = (
+            "diff --git a/../outside_victim.py b/../outside_victim.py\n"
+            "--- a/../outside_victim.py\n"
+            "+++ b/../outside_victim.py\n"
+            "@@ -1 +1 @@\n"
+            "-CANARY_INTACT\n"
+            "+OVERWRITTEN\n"
+        )
+        resp = client.post(
+            f"/v1/repos/{repo_id}/proposals",
+            json={
+                "agent_id": "attacker",
+                "change_type": "unified_diff",
+                "change_content": traversal_diff,
+                "affected_paths": ["safe.py"],
+                "confidence_score": 0.9,
+            },
+        )
+        assert resp.status_code == 400
+
+        # 4. Benign affected_paths=["safe.py"] with absolute path in unified_diff headers
+        abs_diff = (
+            f"diff --git a/{outside_target} b/{outside_target}\n"
+            f"--- a/{outside_target}\n"
+            f"+++ b/{outside_target}\n"
+            "@@ -1 +1 @@\n"
+            "-CANARY_INTACT\n"
+            "+OVERWRITTEN\n"
+        )
+        resp = client.post(
+            f"/v1/repos/{repo_id}/proposals",
+            json={
+                "agent_id": "attacker",
+                "change_type": "unified_diff",
+                "change_content": abs_diff,
+                "affected_paths": ["safe.py"],
+                "confidence_score": 0.9,
+            },
+        )
+        assert resp.status_code == 400
+
+        # 5. Benign diff --git header paired with malicious +++ header
+        mismatched_diff = (
+            "diff --git a/safe.py b/safe.py\n"
+            "--- a/safe.py\n"
+            "+++ b/../outside_victim.py\n"
+            "@@ -0,0 +1 @@\n"
+            "+OVERWRITTEN\n"
+        )
+        resp = client.post(
+            f"/v1/repos/{repo_id}/proposals",
+            json={
+                "agent_id": "attacker",
+                "change_type": "unified_diff",
+                "change_content": mismatched_diff,
+                "affected_paths": ["safe.py"],
+                "confidence_score": 0.9,
+            },
+        )
+        assert resp.status_code == 400
+
+        # 6. Benign affected_paths=["safe.py"] with traversal in aip.v0 mutation path
+        aip_payload = json.dumps(
+            {
+                "schema_version": "aip.v0",
+                "mutations": [
+                    {
+                        "path": "../outside_victim.py",
+                        "language": "python",
+                        "op": "replace_node",
+                        "target": {"symbol": "x"},
+                        "code": "x = 1\n",
+                    }
+                ],
+            }
+        )
+        resp = client.post(
+            f"/v1/repos/{repo_id}/proposals",
+            json={
+                "agent_id": "attacker",
+                "change_type": "aip.v0",
+                "change_content": aip_payload,
+                "affected_paths": ["safe.py"],
+                "confidence_score": 0.9,
+            },
+        )
+        assert resp.status_code == 400
+
+        assert outside_target.read_text(encoding="utf-8") == "CANARY_INTACT\n"
+
+    def test_filesystem_materialization_blocks_symlink_escapes(self, tmp_path: Path) -> None:
+        outside_dir = tmp_path / "outside_secret_dir"
+        outside_dir.mkdir()
+        outside_victim = outside_dir / "escape.py"
+        outside_victim.write_text("ORIGINAL_SECRET\n", encoding="utf-8")
+
+        store = DocumentStore("repo-symlink-test")
+        store.apply_full_file("sub/escape.py", "PWNED\n", "agent-1")
+
+        snapshot_dest = tmp_path / "snapshot_dest"
+        snapshot_dest.mkdir()
+        (snapshot_dest / "sub").symlink_to(outside_dir, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="Symlink escape detected"):
+            store.materialize_snapshot(snapshot_dest)
+
+        assert outside_victim.read_text(encoding="utf-8") == "ORIGINAL_SECRET\n"
+
+        # Also verify resolve_contained_path directly rejects symlinked root or final symlink
+        symlink_root = tmp_path / "symlink_root"
+        symlink_root.symlink_to(outside_dir, target_is_directory=True)
+        with pytest.raises(ValueError, match="(?i)symlink"):
+            resolve_contained_path(symlink_root, "escape.py")
+
+    def test_snapshot_clone_gate_workspace_and_git_exporter_reject_symlink_escape(
+        self, api_env
+    ) -> None:
+        tmp_path: Path = api_env["tmp_path"]
+        outside_dir = tmp_path / "outside_export_target"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "app.py"
+        outside_file.write_text("UNTOUCHED\n", encoding="utf-8")
+
+        with Session(api_env["engine"]) as session:
+            repo_service = RepositoryService(session, api_env["storage_dir"])
+            snapshot_service = SnapshotService(session, api_env["event_bus"], api_env["storage_dir"])
+            repo = repo_service.create_repository(name="symlink-export-repo")
+            doc_store = repo_service.get_document_store(repo.id)
+            assert doc_store is not None
+            doc_store.apply_full_file("pkg/app.py", "print('inside')\n", "init")
+            snap = asyncio_run(
+                snapshot_service.create_snapshot(repo.id, doc_store, included_proposals=[])
+            )
+
+            clone_dest = tmp_path / "clone_dest"
+            clone_dest.mkdir()
+            (clone_dest / "pkg").symlink_to(outside_dir, target_is_directory=True)
+            with pytest.raises(ValueError, match="(?i)symlink"):
+                snapshot_service.clone_to_directory(snap.id, clone_dest)
+
+            gate_dest = tmp_path / "gate_dest"
+            gate_dest.mkdir()
+            with pytest.raises(ValueError, match="(?i)symlink"):
+                snap_workspace = gate_dest / snap.id
+                snap_workspace.mkdir()
+                (snap_workspace / "pkg").symlink_to(outside_dir, target_is_directory=True)
+                snapshot_service._materialize_delta_snapshot(
+                    document_store=doc_store,
+                    snapshot_path=snap_workspace,
+                    base_snapshot_id="snap-base",
+                    base_paths={"pkg/app.py"},
+                    changed_paths={"pkg/app.py"},
+                    total_bytes=16,
+                )
+
+            export_dest = tmp_path / "export_dest"
+            export_dest.mkdir()
+            (export_dest / ".git").mkdir()
+            (export_dest / "pkg").symlink_to(outside_dir, target_is_directory=True)
+            exporter = GitExporter(tmp_path / "exporter_storage")
+            with pytest.raises(ValueError, match="(?i)symlink"):
+                exporter.export_snapshot_to_git(
+                    doc_store,
+                    output_path=export_dest,
+                    commit_message="attempt symlink escape",
+                    init_if_needed=False,
+                )
+
+        assert outside_file.read_text(encoding="utf-8") == "UNTOUCHED\n"
+
+
+class TestSnapshotTarballExtractionSafety:
+    """Blocker 2: Tarball extraction must reject traversal, absolute paths, links, and special files."""
+
+    @staticmethod
+    def _build_tar_gz(members: list[tuple[tarfile.TarInfo, bytes | None]]) -> bytes:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for info, payload in members:
+                if payload is not None:
+                    info.size = len(payload)
+                    tf.addfile(info, io.BytesIO(payload))
+                else:
+                    tf.addfile(info)
+        return buf.getvalue()
+
+    def test_safe_extract_tarball_rejects_parent_traversal(self, tmp_path: Path) -> None:
+        outside_victim = tmp_path / "outside.txt"
+        dest_dir = tmp_path / "extract_here"
+        dest_dir.mkdir()
+
+        info = tarfile.TarInfo(name="../outside.txt")
+        archive_bytes = self._build_tar_gz([(info, b"escaped\n")])
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
+            with pytest.raises(ValueError, match="Path traversal segment is not allowed"):
+                safe_extract_tarball(tf, dest_dir)
+
+        assert not outside_victim.exists()
+
+    def test_safe_extract_tarball_rejects_absolute_path(self, tmp_path: Path) -> None:
+        outside_victim = tmp_path / "abs_outside.txt"
+        dest_dir = tmp_path / "extract_abs"
+        dest_dir.mkdir()
+
+        info = tarfile.TarInfo(name=str(outside_victim))
+        archive_bytes = self._build_tar_gz([(info, b"escaped\n")])
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
+            with pytest.raises(ValueError, match="Path must be a relative repository path"):
+                safe_extract_tarball(tf, dest_dir)
+
+        assert not outside_victim.exists()
+
+    def test_safe_extract_tarball_rejects_symlink_and_hardlink_escapes(
+        self, tmp_path: Path
+    ) -> None:
+        outside_dir = tmp_path / "outside_link_target"
+        outside_dir.mkdir()
+        outside_victim = outside_dir / "pwn.txt"
+        dest_dir = tmp_path / "extract_links"
+        dest_dir.mkdir()
+
+        sym_info = tarfile.TarInfo(name="sub")
+        sym_info.type = tarfile.SYMTYPE
+        sym_info.linkname = str(outside_dir)
+
+        file_info = tarfile.TarInfo(name="sub/pwn.txt")
+        archive_bytes = self._build_tar_gz([(sym_info, None), (file_info, b"pwned\n")])
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
+            with pytest.raises(ValueError, match="Unsafe or unsupported tar member type"):
+                safe_extract_tarball(tf, dest_dir)
+
+        assert not outside_victim.exists()
+
+        hard_info = tarfile.TarInfo(name="hardlink.txt")
+        hard_info.type = tarfile.LNKTYPE
+        hard_info.linkname = "../outside.txt"
+        hard_archive = self._build_tar_gz([(hard_info, None)])
+
+        with tarfile.open(fileobj=io.BytesIO(hard_archive), mode="r:gz") as tf:
+            with pytest.raises(ValueError, match="Unsafe or unsupported tar member type"):
+                safe_extract_tarball(tf, dest_dir)
+
+    def test_safe_extract_tarball_rejects_special_fifo_member(self, tmp_path: Path) -> None:
+        dest_dir = tmp_path / "extract_special"
+        dest_dir.mkdir()
+
+        fifo_info = tarfile.TarInfo(name="named_pipe")
+        fifo_info.type = tarfile.FIFOTYPE
+        archive_bytes = self._build_tar_gz([(fifo_info, None)])
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
+            with pytest.raises(ValueError, match="Unsafe or unsupported tar member type"):
+                safe_extract_tarball(tf, dest_dir)
+
+    def test_cli_git_export_rejects_malicious_tarball_from_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        outside_victim = tmp_path / "cli_outside_escape.txt"
+        export_target = tmp_path / "git_export_out"
+
+        info = tarfile.TarInfo(name="../cli_outside_escape.txt")
+        malicious_tar = self._build_tar_gz([(info, b"cli_escaped\n")])
+
+        class _FakeResponse:
+            status_code = 200
+            content = malicious_tar
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"snapshot_id": "snap-malicious", "head_sequence": 1}
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def get(self, url: str):
+                return _FakeResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "Client", _FakeClient)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_app,
+            ["git-export", "repo-123", str(export_target)],
+        )
+        assert result.exit_code != 0
+        assert not outside_victim.exists()
+
+
+class TestSQLitePromotionAtomicity:
+    """Blocker 3: SQLite promotion must commit canonical state in one transaction and defer events."""
+
+    def test_sqlite_trigger_abort_on_promoted_status_rolls_back_all_canonical_state(
+        self, api_env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AETHER_DEFER_CONFLICT_DETECTION", "false")
+        client: TestClient = api_env["client"]
+        engine = api_env["engine"]
+        event_bus: EventBus = api_env["event_bus"]
+
+        published_events: list[AetherEvent] = []
+        sub_id = event_bus.subscribe(lambda evt: published_events.append(evt))
+
+        try:
+            repo_resp = client.post(
+                "/v1/repos",
+                json={
+                    "name": "atomic-sqlite-repo",
+                    "config": {
+                        "gates": [
+                            {
+                                "name": "build",
+                                "command": "echo 'Build OK'",
+                                "required": True,
+                                "timeout_seconds": 10,
+                            }
+                        ]
+                    },
+                },
+            )
+            assert repo_resp.status_code == 200
+            repo_id = repo_resp.json()["id"]
+
+            # Submit two conflicting proposals so ConflictSet resolution is also exercised
+            prop1_resp = client.post(
+                f"/v1/repos/{repo_id}/proposals",
+                json={
+                    "agent_id": "agent-atomic-1",
+                    "change_type": "full_file",
+                    "change_content": "VALUE = 1\n",
+                    "affected_paths": ["atomic.py"],
+                    "confidence_score": 0.95,
+                },
+            )
+            assert prop1_resp.status_code == 200
+            prop1_id = prop1_resp.json()["proposal_id"]
+
+            prop2_resp = client.post(
+                f"/v1/repos/{repo_id}/proposals",
+                json={
+                    "agent_id": "agent-atomic-2",
+                    "change_type": "full_file",
+                    "change_content": "VALUE = 2\n",
+                    "affected_paths": ["atomic.py"],
+                    "confidence_score": 0.60,
+                },
+            )
+            assert prop2_resp.status_code == 200
+
+            # Clear submission events before testing promotion
+            published_events.clear()
+
+            # Inject a SQLite BEFORE UPDATE trigger that aborts when status becomes PROMOTED
+            with Session(engine) as session:
+                session.exec(
+                    text(
+                        """
+                        CREATE TRIGGER reject_promoted_status
+                        BEFORE UPDATE ON aether_proposals
+                        WHEN NEW.status = 'PROMOTED'
+                        BEGIN
+                            SELECT RAISE(ABORT, 'injected_promoted_status_failure');
+                        END;
+                        """
+                    )
+                )
+                session.commit()
+
+            promote_resp = client.post(
+                f"/v1/repos/{repo_id}/promotions",
+                json={"proposal_ids": [prop1_id]},
+            )
+            assert promote_resp.status_code == 500
+
+            # Verify no canonical promotion state was left committed
+            with Session(engine) as session:
+                repo = session.get(routes.Repository, repo_id)
+                assert repo is not None
+                assert repo.head_sequence == 0
+                assert repo.head_id is None
+
+                promotions = session.exec(
+                    select(Promotion).where(Promotion.repo_id == repo_id)
+                ).all()
+                assert promotions == []
+
+                heads = session.exec(
+                    select(AetherHead).where(AetherHead.repo_id == repo_id)
+                ).all()
+                assert heads == []
+
+                op_nodes = session.exec(
+                    select(OperationGraphNode).where(OperationGraphNode.repo_id == repo_id)
+                ).all()
+                assert op_nodes == []
+
+                conflict_sets = session.exec(
+                    select(ConflictSet).where(ConflictSet.repo_id == repo_id)
+                ).all()
+                assert len(conflict_sets) == 1
+                assert conflict_sets[0].resolved is False
+                assert conflict_sets[0].resolved_at is None
+                assert conflict_sets[0].active_choice_id is None
+
+                metric = session.get(AgentMetric, ("agent-atomic-1", "global"))
+                assert metric is None or metric.promoted_count == 0
+
+            # Verify no promotion/conflict/head events were published when commit failed
+            forbidden_event_types = {
+                EventType.PROPOSAL_PROMOTED,
+                EventType.CONFLICT_RESOLVED,
+                EventType.HEAD_UPDATED,
+            }
+            published_types = {evt.event_type for evt in published_events}
+            assert forbidden_event_types.isdisjoint(published_types), (
+                f"Events published despite transaction rollback: {published_types}"
+            )
+
+            # Now remove the trigger and verify promotion succeeds cleanly in one transaction
+            with Session(engine) as session:
+                session.exec(text("DROP TRIGGER reject_promoted_status;"))
+                session.commit()
+
+            published_events.clear()
+            retry_resp = client.post(
+                f"/v1/repos/{repo_id}/promotions",
+                json={"proposal_ids": [prop1_id]},
+            )
+            assert retry_resp.status_code == 200
+            retry_body = retry_resp.json()
+            assert retry_body["success"] is True
+            assert retry_body["new_head_sequence"] == 1
+
+            with Session(engine) as session:
+                repo = session.get(routes.Repository, repo_id)
+                assert repo is not None
+                assert repo.head_sequence == 1
+                assert repo.head_id is not None
+
+                promotions = session.exec(
+                    select(Promotion).where(Promotion.repo_id == repo_id)
+                ).all()
+                assert len(promotions) == 1
+
+                prop1 = session.get(Proposal, prop1_id)
+                assert prop1 is not None
+                assert prop1.status == ProposalStatus.PROMOTED
+
+                conflict_sets = session.exec(
+                    select(ConflictSet).where(ConflictSet.repo_id == repo_id)
+                ).all()
+                assert len(conflict_sets) == 1
+                assert conflict_sets[0].resolved is True
+                assert conflict_sets[0].resolved_at is not None
+                assert conflict_sets[0].active_choice_id == prop1_id
+
+            retry_event_types = [evt.event_type for evt in published_events]
+            assert EventType.PROPOSAL_PROMOTED in retry_event_types
+            assert EventType.CONFLICT_RESOLVED in retry_event_types
+            assert EventType.HEAD_UPDATED in retry_event_types
+        finally:
+            event_bus.unsubscribe(sub_id)
+
+
+def test_cli_promote_help_does_not_claim_force_bypasses_gates() -> None:
+    """Minor note: CLI --force help text must reflect that required gates remain fail-closed."""
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["promote", "--help"])
+    assert result.exit_code == 0
+    assert "even if gates fail" not in result.stdout.lower()
+    assert "fail-closed" in result.stdout.lower()
+
+
+def asyncio_run(coro):
+    import asyncio
+
+    return asyncio.run(coro)

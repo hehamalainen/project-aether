@@ -95,8 +95,8 @@ from ..models.entities import (
     SystemMetricEventType,
     ContentionWinner,
 )
-from ..models.events import EventType
-from ..crdt.document_store import DocumentStore
+from ..models.events import AetherEvent, EventType
+from ..crdt.document_store import DocumentStore, validate_repo_relative_path
 from .event_bus import EventBus, create_head_event
 from .proposal_service import ProposalService
 from .snapshot_service import SnapshotService
@@ -1029,14 +1029,18 @@ class PromotionEngine:
 
     @staticmethod
     def _parse_affected_paths(proposal: Proposal) -> list[str]:
-        """Decode proposal affected paths with defensive fallback."""
+        """Decode and validate proposal affected paths."""
         try:
             raw_paths = json.loads(proposal.affected_paths)
         except Exception:
             return []
         if not isinstance(raw_paths, list):
             return []
-        return [path for path in raw_paths if isinstance(path, str) and path]
+        return [
+            validate_repo_relative_path(path)
+            for path in raw_paths
+            if isinstance(path, str) and path
+        ]
 
     async def _apply_proposal_change(
         self,
@@ -2402,6 +2406,9 @@ class PromotionEngine:
         promote_started = time.perf_counter()
         self._last_promotion_phase_timing = {}
         phase = "begin_immediate_transaction"
+        committed = False
+        pending_events: list[AetherEvent] = []
+        pending_logs: list[tuple[str, str, str, Optional[str]]] = []
         try:
             from sqlmodel import text
             if self.session.bind and self.session.bind.dialect.name == "sqlite":
@@ -2580,16 +2587,9 @@ class PromotionEngine:
                 final_score=candidate.score,
                 triggered_by=triggered_by,
             )
-            is_pg = self.session.bind and self.session.bind.dialect.name == "postgresql"
             record_commit_started = time.perf_counter()
             self.session.add(promotion)
-            if is_pg:
-                self.session.flush()
-            else:
-                self.session.commit()
-                self.session.commit()
-                if self.session.bind and self.session.bind.dialect.name == "sqlite":
-                    self.session.exec(text("BEGIN IMMEDIATE"))
+            self.session.flush()
             record_commit_ms = (time.perf_counter() - record_commit_started) * 1000.0
 
             # Import repository service to update head
@@ -2601,7 +2601,7 @@ class PromotionEngine:
                 repo_id,
                 candidate.snapshot_id,
                 promotion_id=promotion.id,
-                commit=not is_pg,
+                commit=False,
             )
 
             # Update promotion with actual head ID
@@ -2635,15 +2635,10 @@ class PromotionEngine:
             phase = "operation_graph_commit"
             self.session.add(promotion)
             self.session.add(operation_node)
-            if is_pg:
-                self.session.flush()
-            else:
-                self.session.commit()
-                if self.session.bind and self.session.bind.dialect.name == "sqlite":
-                    self.session.exec(text("BEGIN IMMEDIATE"))
+            self.session.flush()
             head_commit_ms = (time.perf_counter() - head_commit_started) * 1000.0
 
-            # Mark promoted proposals in one transaction.
+            # Mark promoted proposals inside the same canonical transaction.
             phase = "status_updates"
             status_phase_started = time.perf_counter()
             status_updates = []
@@ -2662,7 +2657,10 @@ class PromotionEngine:
 
             await self.proposal_service.update_status_many(
                 status_updates,
-                commit=not is_pg,
+                commit=False,
+                publish_events=False,
+                deferred_events=pending_events,
+                deferred_logs=pending_logs,
             )
 
             # Resolve any conflict sets
@@ -2675,23 +2673,37 @@ class PromotionEngine:
                     await self.proposal_service.resolve_conflict_set(
                         proposal.conflict_set_id,
                         proposal.id,
-                        commit=not is_pg,
+                        commit=False,
                         semantic_merge_enabled=self.semantic_merge_enabled,
+                        publish_events=False,
+                        deferred_events=pending_events,
+                        deferred_logs=pending_logs,
                     )
                 else:
                     # Promotion for non-conflicting proposal
                     self.trust_service.record_promotion(proposal.agent_id, commit=False)
             status_phase_ms = (time.perf_counter() - status_phase_started) * 1000.0
 
-            # Persist trust metric updates as one transaction.
+            # Commit all canonical promotion state in one atomic transaction.
             phase = "trust_commit"
             trust_commit_started = time.perf_counter()
             self.session.commit()
+            committed = True
             trust_commit_ms = (time.perf_counter() - trust_commit_started) * 1000.0
 
-            # Publish head update event
+            # Publish deferred proposal/conflict events and head update event only after commit succeeds.
             phase = "publish"
             publish_started = time.perf_counter()
+            for proposal_id, old_status_str, new_status_str, reason in pending_logs:
+                logger.info(
+                    "proposal_status_updated",
+                    proposal_id=proposal_id,
+                    old_status=old_status_str,
+                    new_status=new_status_str,
+                    reason=reason,
+                )
+            for event in pending_events:
+                await self.event_bus.publish(event)
             await self.event_bus.publish(
                 create_head_event(
                     EventType.HEAD_UPDATED,
@@ -2707,8 +2719,12 @@ class PromotionEngine:
             )
             publish_ms = (time.perf_counter() - publish_started) * 1000.0
         except ExternalCommitAbortedError:
+            if not committed:
+                self.session.rollback()
             raise
         except Exception as exc:
+            if not committed:
+                self.session.rollback()
             raise PromotionPhaseError(phase, exc) from exc
 
         phase_timing = {

@@ -42,7 +42,7 @@ class TrustService:
         # Trust weight for combined scoring
         self.lambda_trust = 0.5
 
-    def get_metrics(self, agent_id: str, scope: str = "global") -> AgentMetric:
+    def get_metrics(self, agent_id: str, scope: str = "global", commit: bool = True) -> AgentMetric:
         """Get or initialize metrics for an agent in a given scope."""
         statement = select(AgentMetric).where(
             AgentMetric.agent_id == agent_id,
@@ -58,8 +58,11 @@ class TrustService:
                 trust_beta=self.beta0
             )
             self.session.add(metric)
-            self.session.commit()
-            self.session.refresh(metric)
+            if commit:
+                self.session.commit()
+                self.session.refresh(metric)
+            else:
+                self.session.flush()
 
         return metric
 
@@ -79,7 +82,7 @@ class TrustService:
 
     def record_submission(self, agent_id: str, scope: str = "global", commit: bool = True):
         """Record a new proposal submission."""
-        metric = self.get_metrics(agent_id, scope)
+        metric = self.get_metrics(agent_id, scope, commit=commit)
         metric.total_proposals += 1
         metric.last_seen = datetime.now(UTC)
         metric.updated_at = datetime.now(UTC)
@@ -97,7 +100,7 @@ class TrustService:
         commit: bool = True,
     ):
         """Record a successful promotion (increases alpha)."""
-        metric = self.get_metrics(agent_id, scope)
+        metric = self.get_metrics(agent_id, scope, commit=commit)
         metric.promoted_count += 1
         metric.trust_alpha += weight
         metric.updated_at = datetime.now(UTC)
@@ -115,7 +118,7 @@ class TrustService:
         commit: bool = True,
     ):
         """Record a hard gate failure (increases beta)."""
-        metric = self.get_metrics(agent_id, scope)
+        metric = self.get_metrics(agent_id, scope, commit=commit)
         metric.hard_fail_count += 1
         metric.trust_beta += weight
         metric.updated_at = datetime.now(UTC)
@@ -138,7 +141,7 @@ class TrustService:
 
     def record_neutral_loss(self, agent_id: str, scope: str = "global", commit: bool = True):
         """Record a valid proposal that wasn't promoted due to competition (no trust penalty)."""
-        metric = self.get_metrics(agent_id, scope)
+        metric = self.get_metrics(agent_id, scope, commit=commit)
         metric.neutral_loss_count += 1
         metric.updated_at = datetime.now(UTC)
         self.session.add(metric)
