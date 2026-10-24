@@ -3,8 +3,198 @@ use diffy::Patch;
 use models::entities::Proposal;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use regex::Regex;
+
+const RESERVED_PATH_SEGMENTS: &[&str] = &[".git"];
+const RESERVED_FILENAMES: &[&str] = &[
+    ".aether_snapshot_manifest.json",
+    ".aether_crdt_state.json",
+];
+
+fn is_reserved_segment(part: &str) -> bool {
+    let lowered = part.to_lowercase();
+    let stripped_right = lowered.trim_end_matches(&[' ', '.'][..]);
+    let stripped_spaces = lowered.trim().trim_end_matches('.');
+    RESERVED_PATH_SEGMENTS.contains(&lowered.as_str())
+        || RESERVED_PATH_SEGMENTS.contains(&stripped_right)
+        || RESERVED_PATH_SEGMENTS.contains(&stripped_spaces)
+        || stripped_right.starts_with("git~")
+        || stripped_right.starts_with(".git~")
+}
+
+fn is_reserved_filename(name: &str) -> bool {
+    let lowered = name.to_lowercase();
+    let stripped_right = lowered.trim_end_matches(&[' ', '.'][..]);
+    let stripped_spaces = lowered.trim().trim_end_matches('.');
+    RESERVED_FILENAMES.contains(&lowered.as_str())
+        || RESERVED_FILENAMES.contains(&stripped_right)
+        || RESERVED_FILENAMES.contains(&stripped_spaces)
+}
+
+pub fn validate_repo_relative_path(path: &str) -> Result<String, String> {
+    let cleaned = path.trim();
+    if cleaned.is_empty() {
+        return Err("Path must not be empty".to_string());
+    }
+    if cleaned.contains('\0') || cleaned.contains('\r') || cleaned.contains('\n') {
+        return Err(format!("Path contains forbidden control characters: {:?}", path));
+    }
+    if cleaned.contains('\\') {
+        return Err(format!("Path must use forward slashes only: {:?}", path));
+    }
+    if cleaned.starts_with('/') || cleaned.starts_with('~') || cleaned.ends_with('/') {
+        return Err(format!("Path must be a relative repository path: {:?}", path));
+    }
+
+    let parts: Vec<&str> = cleaned.split('/').collect();
+    if parts.iter().any(|p| p.is_empty()) {
+        return Err(format!("Path contains empty segment: {:?}", path));
+    }
+    if parts[0].contains(':') {
+        return Err(format!("Path must not include a drive or scheme prefix: {:?}", path));
+    }
+
+    for part in &parts {
+        if *part == "." || *part == ".." {
+            return Err(format!("Path traversal segment is not allowed: {:?}", path));
+        }
+        if is_reserved_segment(part) {
+            return Err(format!("Reserved path segment '{}' is not allowed: {:?}", part, path));
+        }
+    }
+
+    if let Some(last) = parts.last() {
+        if is_reserved_filename(last) {
+            return Err(format!("Reserved filename '{}' is not allowed: {:?}", last, path));
+        }
+    }
+
+    Ok(parts.join("/"))
+}
+
+fn resolve_base_directory(base_dir: &Path) -> Result<PathBuf, String> {
+    if let Ok(meta) = std::fs::symlink_metadata(base_dir) {
+        if meta.file_type().is_symlink() {
+            return Err(format!("Base directory must not be a symlink: {:?}", base_dir));
+        }
+    }
+    if base_dir.exists() {
+        return std::fs::canonicalize(base_dir)
+            .map_err(|e| format!("Failed to canonicalize base directory {:?}: {}", base_dir, e));
+    }
+
+    let mut existing = base_dir.to_path_buf();
+    let mut missing_parts = Vec::new();
+    while !existing.exists() {
+        if let Some(name) = existing.file_name() {
+            missing_parts.push(name.to_os_string());
+        } else {
+            break;
+        }
+        if !existing.pop() {
+            break;
+        }
+    }
+
+    let mut resolved = if existing.as_os_str().is_empty() {
+        std::env::current_dir().map_err(|e| e.to_string())?
+    } else {
+        if let Ok(meta) = std::fs::symlink_metadata(&existing) {
+            if meta.file_type().is_symlink() {
+                return Err(format!("Base directory ancestor must not be a symlink: {:?}", existing));
+            }
+        }
+        std::fs::canonicalize(&existing).map_err(|e| e.to_string())?
+    };
+
+    for part in missing_parts.into_iter().rev() {
+        resolved.push(part);
+    }
+    Ok(resolved)
+}
+
+pub fn resolve_contained_path(base_dir: &Path, rel_path: &str) -> Result<PathBuf, String> {
+    let normalized = validate_repo_relative_path(rel_path)?;
+    let base_resolved = resolve_base_directory(base_dir)?;
+
+    let mut current = base_resolved.clone();
+    for part in normalized.split('/') {
+        current.push(part);
+        if let Ok(meta) = std::fs::symlink_metadata(&current) {
+            if meta.file_type().is_symlink() {
+                return Err(format!("Symlink escape detected in path: {:?}", rel_path));
+            }
+            let resolved_step = std::fs::canonicalize(&current)
+                .map_err(|e| format!("Failed to resolve path {:?}: {}", current, e))?;
+            if resolved_step == base_resolved || !resolved_step.starts_with(&base_resolved) {
+                return Err(format!("Resolved path escapes base directory: {:?}", rel_path));
+            }
+            if let Ok(rel) = resolved_step.strip_prefix(&base_resolved) {
+                for comp in rel.components() {
+                    if let Some(comp_str) = comp.as_os_str().to_str() {
+                        if is_reserved_segment(comp_str) {
+                            return Err(format!(
+                                "Reserved path segment '{}' is not allowed: {:?}",
+                                comp_str, rel_path
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(name) = current.file_name().and_then(|n| n.to_str()) {
+        if is_reserved_filename(name) {
+            return Err(format!("Reserved filename '{}' is not allowed: {:?}", name, rel_path));
+        }
+    }
+
+    Ok(current)
+}
+
+pub fn validate_proposal_paths(
+    change_type: &str,
+    change_content: &str,
+    affected_paths: &[String],
+) -> Result<Vec<String>, String> {
+    let mut normalized_paths = Vec::new();
+    for raw_path in affected_paths {
+        let norm = validate_repo_relative_path(raw_path)?;
+        if !normalized_paths.contains(&norm) {
+            normalized_paths.push(norm);
+        }
+    }
+
+    match change_type {
+        "full_file" => {
+            if normalized_paths.is_empty() {
+                return Err("full_file proposal requires at least one valid affected_path".to_string());
+            }
+            Ok(normalized_paths)
+        }
+        "unified_diff" => {
+            let parsed = parse_unified_diff(change_content)?;
+            if parsed.is_empty() {
+                return Err("unified_diff proposal did not contain any valid file hunks".to_string());
+            }
+            let mut diff_paths: Vec<String> = parsed.keys().cloned().collect();
+            diff_paths.sort();
+            for diff_path in diff_paths {
+                let norm = validate_repo_relative_path(&diff_path)?;
+                if !normalized_paths.contains(&norm) {
+                    normalized_paths.push(norm);
+                }
+            }
+            if normalized_paths.is_empty() {
+                return Err("unified_diff proposal requires at least one valid path".to_string());
+            }
+            Ok(normalized_paths)
+        }
+        other => Err(format!("Unsupported change_type: {}", other)),
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileDocument {
@@ -181,6 +371,7 @@ impl DocumentStore {
         diff_text: &str,
         proposal_id: &str,
     ) -> Result<Vec<String>, String> {
+        let _ = parse_unified_diff(diff_text)?;
         let mut affected_paths = Vec::new();
 
         // Simple heuristic to split multi-file diffs:
@@ -209,16 +400,20 @@ impl DocumentStore {
                 }
             };
 
-            // diffy::Patch provides old_path and new_path? Let's check using another way if files() fails.
-            // Wait, we know diff_str. We can just parse the file path from '--- a/path' or '+++ b/path' manually.
             let mut file_path = String::new();
             for line in diff_str.lines() {
-                if let Some(stripped) = line.strip_prefix("+++ b/") {
-                    file_path = stripped.to_string();
-                    break;
-                } else if let Some(stripped) = line.strip_prefix("--- a/") {
-                    if file_path.is_empty() {
-                        file_path = stripped.to_string();
+                if let Some(stripped) = line.strip_prefix("+++ ") {
+                    let candidate = stripped.split('\t').next().unwrap_or("").trim();
+                    if candidate != "/dev/null" {
+                        let rel = candidate.strip_prefix("b/").unwrap_or(candidate);
+                        file_path = validate_repo_relative_path(rel)?;
+                        break;
+                    }
+                } else if let Some(stripped) = line.strip_prefix("--- ") {
+                    let candidate = stripped.split('\t').next().unwrap_or("").trim();
+                    if candidate != "/dev/null" && file_path.is_empty() {
+                        let rel = candidate.strip_prefix("a/").unwrap_or(candidate);
+                        file_path = validate_repo_relative_path(rel)?;
                     }
                 }
             }
@@ -226,6 +421,7 @@ impl DocumentStore {
             if file_path.is_empty() || file_path == "/dev/null" {
                 continue;
             }
+            file_path = validate_repo_relative_path(&file_path)?;
 
             let old_text = {
                 let file_doc = self.get_or_create_document(&file_path);
@@ -322,15 +518,31 @@ impl DocumentStore {
     }
 
     pub fn load_from_snapshot(&mut self, snapshot_path: &Path) -> Result<(), String> {
+        if let Ok(meta) = std::fs::symlink_metadata(snapshot_path) {
+            if meta.file_type().is_symlink() {
+                return Err(format!("Snapshot path must not be a symlink: {:?}", snapshot_path));
+            }
+        }
         if !snapshot_path.exists() || !snapshot_path.is_dir() {
             return Err(format!("Snapshot path does not exist: {:?}", snapshot_path));
         }
 
         let crdt_state_path = snapshot_path.join(".aether_crdt_state.json");
         if crdt_state_path.exists() {
+            if let Ok(meta) = std::fs::symlink_metadata(&crdt_state_path) {
+                if meta.file_type().is_symlink() {
+                    return Err("CRDT state file must not be a symlink".to_string());
+                }
+            }
             if let Ok(state_json) = std::fs::read_to_string(&crdt_state_path) {
-                if let Ok(docs) = serde_json::from_str(&state_json) {
-                    self.documents = docs;
+                if let Ok(docs) = serde_json::from_str::<HashMap<String, FileDocument>>(&state_json) {
+                    let mut validated_docs = HashMap::new();
+                    for (raw_key, mut doc) in docs {
+                        let norm_key = validate_repo_relative_path(&raw_key)?;
+                        doc.path = norm_key.clone();
+                        validated_docs.insert(norm_key, doc);
+                    }
+                    self.documents = validated_docs;
                     return Ok(());
                 }
             }
@@ -348,11 +560,15 @@ impl DocumentStore {
                     .get("base_snapshot_id")
                     .and_then(|id| id.as_str())
                     .ok_or("Delta manifest missing base_snapshot_id")?;
+                let norm_base_id = validate_repo_relative_path(base_id)?;
+                if norm_base_id.contains('/') {
+                    return Err(format!("Invalid base_snapshot_id: {}", base_id));
+                }
 
-                let base_path = snapshot_path
+                let parent_dir = snapshot_path
                     .parent()
-                    .ok_or("Snapshot path has no parent directory")?
-                    .join(base_id);
+                    .ok_or("Snapshot path has no parent directory")?;
+                let base_path = resolve_contained_path(parent_dir, &norm_base_id)?;
 
                 // Recursively load base snapshot
                 self.load_from_snapshot(&base_path)?;
@@ -361,7 +577,8 @@ impl DocumentStore {
                 if let Some(deleted) = manifest.get("deleted_paths").and_then(|d| d.as_array()) {
                     for path_val in deleted {
                         if let Some(path_str) = path_val.as_str() {
-                            self.documents.remove(path_str);
+                            let norm_del = validate_repo_relative_path(path_str)?;
+                            self.documents.remove(&norm_del);
                         }
                     }
                 }
@@ -374,7 +591,8 @@ impl DocumentStore {
 
                 for path_val in changed {
                     let path_str = path_val.as_str().ok_or("Invalid changed_path element")?;
-                    let full_path = snapshot_path.join(path_str);
+                    let norm_path = validate_repo_relative_path(path_str)?;
+                    let full_path = resolve_contained_path(snapshot_path, &norm_path)?;
                     if !full_path.exists() {
                         return Err(format!(
                             "File in changed_paths is missing on disk: {}",
@@ -383,7 +601,7 @@ impl DocumentStore {
                     }
                     let content = std::fs::read_to_string(&full_path)
                         .map_err(|e| format!("Failed to read changed file {}: {}", path_str, e))?;
-                    self.apply_full_file(path_str, &content, "snapshot_load");
+                    self.apply_full_file(&norm_path, &content, "snapshot_load");
                 }
 
                 Some("delta".to_string())
@@ -397,26 +615,33 @@ impl DocumentStore {
         if mode != Some("delta".to_string()) {
             let walker = walkdir::WalkDir::new(snapshot_path);
             for entry_res in walker.into_iter() {
-let entry = match entry_res {
-Ok(e) => e,
-Err(err) => {
-eprintln!("WALKDIR ERROR: {:?}", err);
-continue;
-}
-};
+                let entry = match entry_res {
+                    Ok(e) => e,
+                    Err(err) => {
+                        eprintln!("WALKDIR ERROR: {:?}", err);
+                        continue;
+                    }
+                };
+                if entry.path_is_symlink() {
+                    return Err(format!(
+                        "Symlink detected inside snapshot directory: {:?}",
+                        entry.path()
+                    ));
+                }
                 if entry.file_type().is_file() {
                     let path = entry.path();
-                    // Skip manifest file
-                    if path.file_name().and_then(|n| n.to_str())
-                        == Some(".aether_snapshot_manifest.json")
-                    {
-                        continue;
+                    if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                        if is_reserved_filename(fname) {
+                            continue;
+                        }
                     }
 
                     if let Ok(rel_path) = path.strip_prefix(snapshot_path) {
                         if let Some(rel_str) = rel_path.to_str() {
+                            let norm_rel = validate_repo_relative_path(rel_str)?;
+                            resolve_contained_path(snapshot_path, &norm_rel)?;
                             let content = std::fs::read_to_string(path).unwrap_or_default();
-                            self.apply_full_file(rel_str, &content, "snapshot_load");
+                            self.apply_full_file(&norm_rel, &content, "snapshot_load");
                         }
                     }
                 }
@@ -427,22 +652,45 @@ continue;
     }
 
     pub fn materialize_snapshot(&self, output_path: &Path) -> Result<(usize, usize), String> {
+        if let Ok(meta) = std::fs::symlink_metadata(output_path) {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "Snapshot output directory must not be a symlink: {:?}",
+                    output_path
+                ));
+            }
+        }
+        std::fs::create_dir_all(output_path).map_err(|e| e.to_string())?;
+
+        // Pre-validate all document paths before writing any file to disk
+        let mut validated_targets = Vec::with_capacity(self.documents.len());
+        for (path, file_doc) in &self.documents {
+            let norm_path = validate_repo_relative_path(path)?;
+            let target = resolve_contained_path(output_path, &norm_path)?;
+            validated_targets.push((norm_path, target, file_doc));
+        }
+
         let mut file_count = 0;
         let mut total_bytes = 0;
 
-        for (path, file_doc) in &self.documents {
-            let full_path = output_path.join(path);
+        for (norm_path, full_path, file_doc) in validated_targets {
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
+            let verified_path = resolve_contained_path(output_path, &norm_path)?;
             let content = file_doc.document.get_text();
-            std::fs::write(&full_path, &content).map_err(|e| e.to_string())?;
+            std::fs::write(&verified_path, &content).map_err(|e| e.to_string())?;
 
             file_count += 1;
             total_bytes += content.len();
         }
 
         let state_path = output_path.join(".aether_crdt_state.json");
+        if let Ok(meta) = std::fs::symlink_metadata(&state_path) {
+            if meta.file_type().is_symlink() {
+                return Err("Refusing to write .aether_crdt_state.json through symlink".to_string());
+            }
+        }
         if let Ok(state_json) = serde_json::to_string(&self.documents) {
             let _ = std::fs::write(&state_path, state_json);
         }
@@ -576,6 +824,7 @@ pub struct DiffHunk {
 pub fn parse_unified_diff(diff_text: &str) -> Result<HashMap<String, Vec<DiffHunk>>, String> {
     let mut files = HashMap::new();
     let mut current_file: Option<String> = None;
+    let mut current_git_file: Option<String> = None;
     let mut current_hunks = Vec::new();
 
     let clean_diff = diff_text.trim_end_matches('\r').trim_end_matches('\n');
@@ -596,18 +845,64 @@ pub fn parse_unified_diff(diff_text: &str) -> Result<HashMap<String, Vec<DiffHun
             }
             current_hunks = Vec::new();
             if let Some(caps) = git_header_re.captures(line) {
-                current_file = Some(caps[2].to_string());
+                let norm_a = validate_repo_relative_path(&caps[1])?;
+                let norm_b = validate_repo_relative_path(&caps[2])?;
+                if norm_a != norm_b {
+                    return Err(format!(
+                        "Mismatched diff --git paths: '{}' vs '{}'",
+                        norm_a, norm_b
+                    ));
+                }
+                current_git_file = Some(norm_b.clone());
+                current_file = Some(norm_b);
+            } else {
+                return Err(format!("Malformed diff --git header: {}", line));
             }
             i += 1;
             continue;
         }
 
         if line.starts_with("---") || line.starts_with("+++") {
+            let is_minus = line.starts_with("---");
+            let raw_rest = &line[3..];
+            if !raw_rest.is_empty() && !raw_rest.starts_with(' ') && !raw_rest.starts_with('\t') {
+                return Err(format!("Malformed file header: {}", line));
+            }
+            let candidate = raw_rest.trim_start().split('\t').next().unwrap_or("").trim();
+            if candidate.is_empty() {
+                return Err(format!("Empty file header in diff: {}", line));
+            }
+            if candidate != "/dev/null" {
+                let stripped = if is_minus {
+                    candidate.strip_prefix("a/").unwrap_or(candidate)
+                } else {
+                    candidate.strip_prefix("b/").unwrap_or(candidate)
+                };
+                let norm_header = validate_repo_relative_path(stripped)?;
+                if let Some(ref git_file) = current_git_file {
+                    if &norm_header != git_file {
+                        return Err(format!(
+                            "Diff header path '{}' does not match diff --git path '{}'",
+                            norm_header, git_file
+                        ));
+                    }
+                }
+                if let Some(ref existing_file) = current_file {
+                    if &norm_header != existing_file && !current_hunks.is_empty() {
+                        files.insert(existing_file.clone(), current_hunks);
+                        current_hunks = Vec::new();
+                    }
+                }
+                current_file = Some(norm_header);
+            }
             i += 1;
             continue;
         }
 
         if line.starts_with("@@") {
+            if current_file.is_none() {
+                return Err("Diff hunk encountered without a valid file header".to_string());
+            }
             if let Some(caps) = hunk_header_re.captures(line) {
                 let old_start = caps[1].parse::<usize>().map_err(|e| format!("Invalid old_start: {}", e))?;
                 let old_count = caps.get(2)

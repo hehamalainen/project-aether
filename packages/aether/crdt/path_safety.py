@@ -4,12 +4,46 @@ and safe tarball extraction helpers.
 """
 
 from pathlib import Path
+import os
 import tarfile
 from typing import Union
+import unicodedata
 
 
 RESERVED_PATH_SEGMENTS = {".git"}
-RESERVED_FILENAMES = {".aether_snapshot_manifest.json"}
+RESERVED_FILENAMES = {
+    ".aether_snapshot_manifest.json",
+    ".aether_crdt_state.json",
+}
+
+
+def _is_reserved_segment(part: str) -> bool:
+    """Return True if ``part`` matches or aliases a reserved VCS/internal directory segment."""
+    normalized = unicodedata.normalize("NFKC", part)
+    lowered = normalized.lower()
+    stripped_right = lowered.rstrip(" .")
+    stripped_spaces = lowered.strip().rstrip(".")
+    if (
+        lowered in RESERVED_PATH_SEGMENTS
+        or stripped_right in RESERVED_PATH_SEGMENTS
+        or stripped_spaces in RESERVED_PATH_SEGMENTS
+        or stripped_right.startswith("git~")
+        or stripped_right.startswith(".git~")
+    ):
+        return True
+    return False
+
+
+def _is_reserved_filename(name: str) -> bool:
+    """Return True if ``name`` matches or aliases a reserved internal metadata filename."""
+    normalized = unicodedata.normalize("NFKC", name).lower()
+    stripped_right = normalized.rstrip(" .")
+    stripped_spaces = normalized.strip().rstrip(".")
+    return (
+        normalized in RESERVED_FILENAMES
+        or stripped_right in RESERVED_FILENAMES
+        or stripped_spaces in RESERVED_FILENAMES
+    )
 
 
 def validate_repo_relative_path(path: str) -> str:
@@ -50,10 +84,10 @@ def validate_repo_relative_path(path: str) -> str:
     for part in parts:
         if part in (".", ".."):
             raise ValueError(f"Path traversal segment is not allowed: {path!r}")
-        if part in RESERVED_PATH_SEGMENTS:
+        if _is_reserved_segment(part):
             raise ValueError(f"Reserved path segment '{part}' is not allowed: {path!r}")
 
-    if parts[-1] in RESERVED_FILENAMES:
+    if _is_reserved_filename(parts[-1]):
         raise ValueError(f"Reserved filename '{parts[-1]}' is not allowed: {path!r}")
 
     return "/".join(parts)
@@ -64,7 +98,8 @@ def resolve_contained_path(base_dir: Union[Path, str], rel_path: str) -> Path:
     Resolve ``rel_path`` inside ``base_dir`` while enforcing:
     1. ``rel_path`` is a valid repository-relative path.
     2. ``base_dir`` itself is not a symlink.
-    3. No existing intermediate directory or target file under ``base_dir`` is a symlink.
+    3. No existing intermediate directory or target file under ``base_dir`` is a symlink
+       or filesystem alias to a reserved directory (such as ``.git`` on case-insensitive APFS/NTFS).
     4. The resolved target path remains strictly within ``base_dir.resolve()``.
     """
     normalized = validate_repo_relative_path(rel_path)
@@ -73,15 +108,36 @@ def resolve_contained_path(base_dir: Union[Path, str], rel_path: str) -> Path:
         raise ValueError(f"Base directory must not be a symlink: {base_path}")
 
     base_resolved = base_path.resolve()
+    git_dir = base_resolved / ".git"
+    has_git_dir = git_dir.exists() or git_dir.is_symlink()
+
     current = base_resolved
     for part in normalized.split("/"):
         current = current / part
         if current.is_symlink():
             raise ValueError(f"Symlink escape detected in path: {rel_path!r}")
+        if has_git_dir and current.exists():
+            try:
+                is_same = os.path.samefile(current, git_dir)
+            except OSError:
+                is_same = False
+            if is_same:
+                raise ValueError(f"Reserved path segment '{part}' is not allowed: {rel_path!r}")
+
+        resolved_step = current.resolve(strict=False)
+        if resolved_step == base_resolved or not resolved_step.is_relative_to(base_resolved):
+            raise ValueError(f"Resolved path escapes base directory: {rel_path!r}")
+        for rel_part in resolved_step.relative_to(base_resolved).parts:
+            if _is_reserved_segment(rel_part):
+                raise ValueError(
+                    f"Reserved path segment '{rel_part}' is not allowed: {rel_path!r}"
+                )
 
     resolved_target = current.resolve(strict=False)
     if resolved_target == base_resolved or not resolved_target.is_relative_to(base_resolved):
         raise ValueError(f"Resolved path escapes base directory: {rel_path!r}")
+    if _is_reserved_filename(resolved_target.name):
+        raise ValueError(f"Reserved filename '{resolved_target.name}' is not allowed: {rel_path!r}")
 
     return current
 

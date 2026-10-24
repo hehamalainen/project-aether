@@ -736,9 +736,9 @@ def git_export(
                     resolve_contained_path(temp_path, rel_path)
                     try:
                         content = file_path.read_text(encoding="utf-8")
-                        doc_store.set_file(rel_path, content)
-                    except Exception:
-                        pass  # Skip binary files
+                    except UnicodeDecodeError:
+                        continue  # Skip binary files
+                    doc_store.set_file(rel_path, content)
             
             # Export
             storage_path = PyPath.home() / ".aether" / "git-exports"

@@ -90,15 +90,29 @@ class TestProposalPathContainment:
             "sub\\inside.py",
             "~/outside.py",
             ".git/config",
+            ".GIT/config",
+            ".Git/hooks/pre-commit",
+            "sub/.GIT/config",
+            ".git./config",
+            "git~1/config",
             "sub/.git/hooks/pre-commit",
             ".aether_snapshot_manifest.json",
+            ".AETHER_SNAPSHOT_MANIFEST.JSON",
             "sub/.aether_snapshot_manifest.json",
+            ".aether_crdt_state.json",
+            ".AETHER_CRDT_STATE.JSON",
             "C:outside.py",
         ],
     )
     def test_validate_repo_relative_path_rejects_unsafe_paths(self, bad_path: str) -> None:
         with pytest.raises(ValueError):
             validate_repo_relative_path(bad_path)
+
+    def test_validate_repo_relative_path_allows_normal_git_named_package_dir(self) -> None:
+        assert (
+            validate_repo_relative_path("packages/aether/git/exporter.py")
+            == "packages/aether/git/exporter.py"
+        )
 
     def test_api_rejects_traversal_and_absolute_paths_across_all_change_types(
         self, api_env
@@ -228,6 +242,19 @@ class TestProposalPathContainment:
                 "change_type": "aip.v0",
                 "change_content": aip_payload,
                 "affected_paths": ["safe.py"],
+                "confidence_score": 0.9,
+            },
+        )
+        assert resp.status_code == 400
+
+        # 7. Case-insensitive .GIT/config alias via API intake
+        resp = client.post(
+            f"/v1/repos/{repo_id}/proposals",
+            json={
+                "agent_id": "attacker",
+                "change_type": "full_file",
+                "change_content": "[core]\n\tfsmonitor = false\n",
+                "affected_paths": [".GIT/config"],
                 "confidence_score": 0.9,
             },
         )
@@ -402,24 +429,69 @@ class TestSnapshotTarballExtractionSafety:
             with pytest.raises(ValueError, match="Unsafe or unsupported tar member type"):
                 safe_extract_tarball(tf, dest_dir)
 
+    @pytest.mark.parametrize(
+        "git_alias_member",
+        [
+            ".GIT/config",
+            ".Git/hooks/pre-commit",
+            "sub/.GIT/config",
+            ".git./config",
+            "git~1/config",
+        ],
+    )
+    def test_safe_extract_tarball_rejects_case_insensitive_git_aliases(
+        self, tmp_path: Path, git_alias_member: str
+    ) -> None:
+        dest_dir = tmp_path / "extract_git_alias"
+        dest_dir.mkdir()
+
+        info = tarfile.TarInfo(name=git_alias_member)
+        archive_bytes = self._build_tar_gz([(info, b"[core]\n\tfsmonitor = true\n")])
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
+            with pytest.raises(ValueError, match="Reserved path segment"):
+                safe_extract_tarball(tf, dest_dir)
+
     def test_cli_git_export_rejects_malicious_tarball_from_server(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
         outside_victim = tmp_path / "cli_outside_escape.txt"
-        export_target = tmp_path / "git_export_out"
+        marker_file = tmp_path / "fsmonitor_executed.marker"
+        export_target_traversal = tmp_path / "git_export_out_traversal"
+        export_target_git_alias = tmp_path / "git_export_out_git_alias"
+        export_target_benign = tmp_path / "git_export_out_benign"
 
-        info = tarfile.TarInfo(name="../cli_outside_escape.txt")
-        malicious_tar = self._build_tar_gz([(info, b"cli_escaped\n")])
+        traversal_info = tarfile.TarInfo(name="../cli_outside_escape.txt")
+        traversal_tar = self._build_tar_gz([(traversal_info, b"cli_escaped\n")])
+
+        git_alias_info = tarfile.TarInfo(name=".GIT/config")
+        git_alias_payload = (
+            "[core]\n"
+            "\trepositoryformatversion = 0\n"
+            "\tfilemode = true\n"
+            "\tbare = false\n"
+            f"\tfsmonitor = touch {marker_file}\n"
+        ).encode("utf-8")
+        git_alias_tar = self._build_tar_gz([(git_alias_info, git_alias_payload)])
+
+        benign_info = tarfile.TarInfo(name="src/main.py")
+        benign_tar = self._build_tar_gz([(benign_info, b"print('ok')\n")])
+
+        requested_urls: list[str] = []
+        active_archive = {"bytes": traversal_tar}
 
         class _FakeResponse:
-            status_code = 200
-            content = malicious_tar
+            def __init__(self, url: str, content: bytes):
+                self.url = url
+                self.status_code = 200
+                self.content = content
 
             def raise_for_status(self) -> None:
                 return None
 
             def json(self) -> dict:
-                return {"snapshot_id": "snap-malicious", "head_sequence": 1}
+                return {"snapshot_id": "snap-test", "head_sequence": 1}
 
         class _FakeClient:
             def __init__(self, *args, **kwargs):
@@ -432,18 +504,55 @@ class TestSnapshotTarballExtractionSafety:
                 return False
 
             def get(self, url: str):
-                return _FakeResponse()
+                requested_urls.append(url)
+                return _FakeResponse(url, active_archive["bytes"])
 
         import httpx
 
         monkeypatch.setattr(httpx, "Client", _FakeClient)
         runner = CliRunner()
-        result = runner.invoke(
+
+        # 1. Parent traversal archive reaches download/extraction and fails closed
+        requested_urls.clear()
+        active_archive["bytes"] = traversal_tar
+        result_traversal = runner.invoke(
             cli_app,
-            ["git-export", "repo-123", str(export_target)],
+            ["git-export", "--repo", "repo-123", "--output", str(export_target_traversal)],
         )
-        assert result.exit_code != 0
+        assert result_traversal.exit_code == 1
+        assert "/v1/repos/repo-123/head" in requested_urls
+        assert "/v1/repos/repo-123/snapshots/snap-test/download" in requested_urls
+        assert "Export failed:" in result_traversal.stdout
+        assert "Path traversal segment is not allowed" in result_traversal.stdout
         assert not outside_victim.exists()
+
+        # 2. Case-insensitive .GIT/config archive reaches download/extraction and fails closed
+        requested_urls.clear()
+        active_archive["bytes"] = git_alias_tar
+        result_git_alias = runner.invoke(
+            cli_app,
+            ["git-export", "--repo", "repo-123", "--output", str(export_target_git_alias)],
+        )
+        assert result_git_alias.exit_code == 1
+        assert "/v1/repos/repo-123/head" in requested_urls
+        assert "/v1/repos/repo-123/snapshots/snap-test/download" in requested_urls
+        assert "Export failed:" in result_git_alias.stdout
+        assert "Reserved path segment '.GIT' is not allowed" in result_git_alias.stdout
+        assert not marker_file.exists()
+        assert not export_target_git_alias.exists()
+
+        # 3. Benign archive with the exact same CLI flags succeeds and commits cleanly
+        requested_urls.clear()
+        active_archive["bytes"] = benign_tar
+        result_benign = runner.invoke(
+            cli_app,
+            ["git-export", "--repo", "repo-123", "--output", str(export_target_benign)],
+        )
+        assert result_benign.exit_code == 0, result_benign.stdout
+        assert "/v1/repos/repo-123/head" in requested_urls
+        assert "/v1/repos/repo-123/snapshots/snap-test/download" in requested_urls
+        assert "Export successful!" in result_benign.stdout
+        assert (export_target_benign / "src" / "main.py").read_text(encoding="utf-8") == "print('ok')\n"
 
 
 class TestSQLitePromotionAtomicity:

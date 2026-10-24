@@ -653,6 +653,16 @@ async fn submit_proposal(
     use std::sync::atomic::Ordering;
     SUBMIT_METRICS.count.fetch_add(1, Ordering::Relaxed);
 
+    let normalized_affected_paths = crdt::document_store::validate_proposal_paths(
+        payload.change_type.as_str(),
+        &payload.change_content,
+        &payload.affected_paths,
+    )
+    .map_err(|e| {
+        tracing::warn!("Rejected proposal with invalid paths: {}", e);
+        axum::http::StatusCode::BAD_REQUEST
+    })?;
+
     // Verify repo exists
     let t_repo_cache_start = std::time::Instant::now();
     let cached = {
@@ -771,7 +781,7 @@ async fn submit_proposal(
         .unwrap_or(0);
 
     if max_path_active > 0 {
-        for path in &payload.affected_paths {
+        for path in &normalized_affected_paths {
             let path_active_count: (i64,) = sqlx::query_as(
                 "SELECT COUNT(*)::bigint FROM aether_proposals \
                  WHERE repo_id = $1 AND status IN ('INGESTED', 'PENDING', 'EVALUATING') \
@@ -844,7 +854,7 @@ async fn submit_proposal(
         let res = crdt::symbol_adapters::compute_affected_symbols(
             payload.change_type.as_str(),
             &payload.change_content,
-            &payload.affected_paths,
+            &normalized_affected_paths,
             &*doc_store,
         );
         SUBMIT_METRICS.t_compute_symbols.fetch_add(t_symbols_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -905,7 +915,7 @@ async fn submit_proposal(
     .bind(payload.confidence_score)
     .bind(payload.change_type.as_str())
     .bind(&payload.change_content)
-    .bind(serde_json::to_string(&payload.affected_paths).unwrap_or_else(|_| "[]".to_string()))
+    .bind(serde_json::to_string(&normalized_affected_paths).unwrap_or_else(|_| "[]".to_string()))
     .bind(&affected_symbols_json)
     .bind(payload.risk_tier)
     .bind(&payload.model_id)
@@ -1118,13 +1128,19 @@ async fn get_head(
                                                 .fetch_optional(&state.pool)
                                                 .await
                                             {
-                                                if p.change_type == "full_file" {
-                                                    let paths: Vec<String> = serde_json::from_str(&p.affected_paths).unwrap_or_default();
-                                                    for path in paths {
-                                                        branch_store.apply_full_file(&path, &p.change_content, &p.id);
+                                                let raw_paths: Vec<String> = serde_json::from_str(&p.affected_paths).unwrap_or_default();
+                                                if let Ok(norm_paths) = crdt::document_store::validate_proposal_paths(
+                                                    &p.change_type,
+                                                    &p.change_content,
+                                                    &raw_paths,
+                                                ) {
+                                                    if p.change_type == "full_file" {
+                                                        for path in norm_paths {
+                                                            branch_store.apply_full_file(&path, &p.change_content, &p.id);
+                                                        }
+                                                    } else if p.change_type == "unified_diff" {
+                                                        let _ = branch_store.apply_diff(&p.change_content, &p.id);
                                                     }
-                                                } else if p.change_type == "unified_diff" {
-                                                    let _ = branch_store.apply_diff(&p.change_content, &p.id);
                                                 }
                                             }
                                         }

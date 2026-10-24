@@ -116,6 +116,24 @@ impl PromotionOrchestrator {
         let mut full_files = Vec::new();
 
         for p in proposals {
+            let parsed_paths: Vec<String> = serde_json::from_str(&p.affected_paths).map_err(|_| {
+                OrchestrationError::BadRequest(format!(
+                    "Proposal {} affected_paths cannot be empty or malformed",
+                    p.id
+                ))
+            })?;
+            crdt::document_store::validate_proposal_paths(
+                &p.change_type,
+                &p.change_content,
+                &parsed_paths,
+            )
+            .map_err(|e| {
+                OrchestrationError::BadRequest(format!(
+                    "Proposal {} has invalid path(s): {}",
+                    p.id, e
+                ))
+            })?;
+
             if p.change_type == "unified_diff" {
                 unified_diffs.push(p);
             } else if p.change_type == "full_file" {
@@ -135,7 +153,13 @@ impl PromotionOrchestrator {
             let paths_res: Result<Vec<String>, _> = serde_json::from_str(&p.affected_paths);
             match paths_res {
                 Ok(paths) if !paths.is_empty() => {
-                    for path in paths {
+                    let norm_paths = crdt::document_store::validate_proposal_paths(
+                        &p.change_type,
+                        &p.change_content,
+                        &paths,
+                    )
+                    .map_err(OrchestrationError::BadRequest)?;
+                    for path in norm_paths {
                         if candidate_store.crdt_mode.as_deref() == Some("token") {
                             candidate_store.apply_token_smart_edit_bounded(&path, &p.change_content, &p.id, active_dot);
                         } else {
@@ -386,25 +410,42 @@ impl PromotionOrchestrator {
                 }
 
                 let pre_apply_store = working_store.cow_clone();
-                let apply_res = if p.change_type == "unified_diff" {
-                    working_store.apply_diff_batch(&[(&p.change_content, &p.id)])
-                } else if p.change_type == "full_file" {
-                    let paths_res: Result<Vec<String>, _> = serde_json::from_str(&p.affected_paths);
-                    match paths_res {
-                        Ok(paths) if !paths.is_empty() => {
-                            for path in &paths {
-                                if working_store.crdt_mode.as_deref() == Some("token") {
-                                    working_store.apply_token_smart_edit_bounded(path, &p.change_content, &p.id, active_dot);
-                                } else {
-                                    working_store.apply_full_file_bounded(path, &p.change_content, &p.id, active_dot);
+                let parsed_paths: Result<Vec<String>, _> = serde_json::from_str(&p.affected_paths);
+                let apply_res = match parsed_paths {
+                    Ok(raw_paths) => match crdt::document_store::validate_proposal_paths(
+                        &p.change_type,
+                        &p.change_content,
+                        &raw_paths,
+                    ) {
+                        Ok(norm_paths) => {
+                            if p.change_type == "unified_diff" {
+                                working_store.apply_diff_batch(&[(&p.change_content, &p.id)])
+                            } else if p.change_type == "full_file" {
+                                for path in &norm_paths {
+                                    if working_store.crdt_mode.as_deref() == Some("token") {
+                                        working_store.apply_token_smart_edit_bounded(
+                                            path,
+                                            &p.change_content,
+                                            &p.id,
+                                            active_dot,
+                                        );
+                                    } else {
+                                        working_store.apply_full_file_bounded(
+                                            path,
+                                            &p.change_content,
+                                            &p.id,
+                                            active_dot,
+                                        );
+                                    }
                                 }
+                                Ok(norm_paths)
+                            } else {
+                                Err(format!("Unsupported change type: {}", p.change_type))
                             }
-                            Ok(paths)
                         }
-                        _ => Err("Empty or malformed affected_paths".to_string()),
-                    }
-                } else {
-                    Err(format!("Unsupported change type: {}", p.change_type))
+                        Err(e) => Err(e),
+                    },
+                    Err(_) => Err("Empty or malformed affected_paths".to_string()),
                 };
 
                 let _changed_paths = match apply_res {
@@ -738,6 +779,187 @@ mod tests {
         assert_eq!(result.superseded_proposals[0].1, "spatial_batching_exclusion");
 
         let _ = std::fs::remove_dir_all(&temp_dir_path);
+    }
+
+    #[tokio::test]
+    async fn test_intake_to_materialization_rejects_outside_storage_writes_and_git_aliases() {
+        let root_dir = std::env::temp_dir().join(format!("aether_containment_{}", uuid::Uuid::new_v4()));
+        let storage_dir = root_dir.join("storage");
+        std::fs::create_dir_all(&storage_dir).unwrap();
+
+        let outside_abs_victim = root_dir.join("outside_abs_victim.txt");
+        let outside_rel_victim = root_dir.join("outside_rel_victim.txt");
+        std::fs::write(&outside_abs_victim, "CANARY_INTACT\n").unwrap();
+        std::fs::write(&outside_rel_victim, "CANARY_INTACT\n").unwrap();
+
+        let abs_victim_str = outside_abs_victim.to_string_lossy().to_string();
+
+        // 1. Intake validation rejects unsafe paths and case-insensitive .git aliases
+        for bad_path in &[
+            abs_victim_str.as_str(),
+            "../outside_rel_victim.txt",
+            "sub/../../outside_rel_victim.txt",
+            ".git/config",
+            ".GIT/config",
+            "sub/.Git/hooks/pre-commit",
+            ".git./config",
+            "git~1/config",
+            ".aether_snapshot_manifest.json",
+            ".AETHER_SNAPSHOT_MANIFEST.JSON",
+            ".aether_crdt_state.json",
+            ".AETHER_CRDT_STATE.JSON",
+        ] {
+            assert!(
+                crdt::document_store::validate_repo_relative_path(bad_path).is_err(),
+                "Expected path {:?} to be rejected",
+                bad_path
+            );
+            assert!(
+                crdt::document_store::validate_proposal_paths(
+                    "full_file",
+                    "OVERWRITTEN\n",
+                    &[bad_path.to_string()],
+                )
+                .is_err(),
+                "Expected proposal path {:?} to be rejected at intake",
+                bad_path
+            );
+        }
+
+        // Intake validation also rejects unified_diff with malicious headers despite benign affected_paths
+        let malicious_diff = format!(
+            "diff --git a/safe.py b/safe.py\n--- a/safe.py\n+++ b/../outside_rel_victim.txt\n@@ -0,0 +1 @@\n+OVERWRITTEN\n"
+        );
+        assert!(
+            crdt::document_store::validate_proposal_paths(
+                "unified_diff",
+                &malicious_diff,
+                &["safe.py".to_string()],
+            )
+            .is_err()
+        );
+
+        // 2. PromotionOrchestrator rejects both absolute and ../ traversal proposals (full_file & unified_diff)
+        let orchestrator = PromotionOrchestrator::new(storage_dir.clone());
+        let repo = Repository {
+            id: "repo_containment".to_string(),
+            name: "containment".to_string(),
+            description: None,
+            head_id: None,
+            head_sequence: 0,
+            gate_config: Some("[]".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            max_alternatives_per_conflict: 5,
+            auto_promote: true,
+            crdt_enabled: true,
+        };
+
+        let make_proposal = |id: &str, change_type: &str, content: &str, paths_json: &str| Proposal {
+            id: id.to_string(),
+            repo_id: repo.id.clone(),
+            agent_id: "attacker".to_string(),
+            task_id: None,
+            source: "manual".to_string(),
+            source_run_id: None,
+            source_task_id: None,
+            source_agent_id: None,
+            source_attempt_id: None,
+            intent_type: None,
+            base_head_id: None,
+            base_head_sequence: 0,
+            change_type: change_type.to_string(),
+            change_content: content.to_string(),
+            affected_paths: paths_json.to_string(),
+            affected_symbols: None,
+            risk_tier: 1,
+            confidence_score: 0.95,
+            model_id: None,
+            calibration_profile: None,
+            rationale: None,
+            dependencies: "[]".to_string(),
+            requires_tests: false,
+            requires_security_scan: false,
+            status: models::entities::ProposalStatus::Pending,
+            conflict_set_id: None,
+            submitted_at: chrono::Utc::now(),
+            evaluated_at: None,
+            promoted_at: None,
+            idempotency_key: None,
+        };
+
+        let prop_abs = make_proposal(
+            "prop_abs",
+            "full_file",
+            "OVERWRITTEN\n",
+            &serde_json::to_string(&vec![abs_victim_str.clone()]).unwrap(),
+        );
+        let prop_rel = make_proposal(
+            "prop_rel",
+            "full_file",
+            "OVERWRITTEN\n",
+            "[\"../../../../outside_rel_victim.txt\"]",
+        );
+        let prop_diff_rel = make_proposal(
+            "prop_diff_rel",
+            "unified_diff",
+            "diff --git a/../../../../outside_rel_victim.txt b/../../../../outside_rel_victim.txt\n--- a/../../../../outside_rel_victim.txt\n+++ b/../../../../outside_rel_victim.txt\n@@ -1 +1 @@\n-CANARY_INTACT\n+OVERWRITTEN\n",
+            "[\"safe.py\"]",
+        );
+
+        for bad_prop in &[prop_abs, prop_rel, prop_diff_rel] {
+            assert!(
+                orchestrator
+                    .evaluate_batch(&repo, std::slice::from_ref(bad_prop), "")
+                    .await
+                    .is_err()
+            );
+            assert!(
+                orchestrator
+                    .orchestrate_promotion(
+                        &repo,
+                        std::slice::from_ref(bad_prop),
+                        "",
+                        0.9,
+                        std::collections::HashMap::new(),
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+
+        // 3. Direct DocumentStore::materialize_snapshot also blocks absolute paths, traversal, and symlink escapes
+        let snap_out = storage_dir.join("snap_direct");
+        std::fs::create_dir_all(&snap_out).unwrap();
+
+        let mut bad_abs_store = DocumentStore::new("repo_containment".to_string());
+        bad_abs_store.apply_full_file(&abs_victim_str, "OVERWRITTEN\n", "prop_abs");
+        assert!(bad_abs_store.materialize_snapshot(&snap_out).is_err());
+
+        let mut bad_rel_store = DocumentStore::new("repo_containment".to_string());
+        bad_rel_store.apply_full_file("../../outside_rel_victim.txt", "OVERWRITTEN\n", "prop_rel");
+        assert!(bad_rel_store.materialize_snapshot(&snap_out).is_err());
+
+        #[cfg(unix)]
+        {
+            let symlink_snap = storage_dir.join("snap_symlink");
+            std::fs::create_dir_all(&symlink_snap).unwrap();
+            std::os::unix::fs::symlink(&root_dir, symlink_snap.join("sub")).unwrap();
+            let mut sym_store = DocumentStore::new("repo_containment".to_string());
+            sym_store.apply_full_file("sub/outside_rel_victim.txt", "OVERWRITTEN\n", "prop_sym");
+            assert!(sym_store.materialize_snapshot(&symlink_snap).is_err());
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(&outside_abs_victim).unwrap(),
+            "CANARY_INTACT\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_rel_victim).unwrap(),
+            "CANARY_INTACT\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&root_dir);
     }
 }
 

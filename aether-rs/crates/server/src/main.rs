@@ -391,8 +391,17 @@ async fn submit_proposal(
 
     let now = chrono::Utc::now();
     let change_content = payload.change_content.clone();
+    let normalized_affected_paths = crdt::document_store::validate_proposal_paths(
+        &payload.change_type,
+        &change_content,
+        &payload.affected_paths,
+    )
+    .map_err(|e| {
+        tracing::warn!("Rejected proposal with invalid paths: {}", e);
+        axum::http::StatusCode::BAD_REQUEST
+    })?;
     let affected_paths_json =
-        serde_json::to_string(&payload.affected_paths).unwrap_or_else(|_| "[]".to_string());
+        serde_json::to_string(&normalized_affected_paths).unwrap_or_else(|_| "[]".to_string());
     let dependencies_json =
         serde_json::to_string(&payload.dependencies).unwrap_or_else(|_| "[]".to_string());
 
@@ -436,7 +445,7 @@ async fn submit_proposal(
         crdt::symbol_adapters::compute_affected_symbols(
             &payload.change_type,
             &change_content,
-            &payload.affected_paths,
+            &normalized_affected_paths,
             &doc_store,
         )
     } else {
