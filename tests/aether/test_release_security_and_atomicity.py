@@ -220,17 +220,43 @@ class TestProposalPathContainment:
         )
         assert resp.status_code == 400
 
-        # 6. Benign affected_paths=["safe.py"] with traversal in aip.v0 mutation path
-        aip_payload = json.dumps(
+        # 6. Benign affected_paths=["safe.py"] with traversal in a valid aip.v0 mutation schema
+        # First verify the exact same AIP v0 mutation structure is valid when path="safe.py"
+        valid_aip_control = json.dumps(
             {
-                "schema_version": "aip.v0",
+                "schema": "aip.v0",
                 "mutations": [
                     {
+                        "op": "update_node",
+                        "path": "safe.py",
+                        "node_id": "func:x",
+                        "content": "def x():\n    return 1\n",
+                    }
+                ],
+            }
+        )
+        control_resp = client.post(
+            f"/v1/repos/{repo_id}/proposals",
+            json={
+                "agent_id": "benign-control",
+                "change_type": "aip.v0",
+                "change_content": valid_aip_control,
+                "affected_paths": ["safe.py"],
+                "confidence_score": 0.9,
+            },
+        )
+        assert control_resp.status_code == 200, control_resp.text
+
+        # Now substitute only the path with "../outside_victim.py" and verify the path guard rejects it
+        aip_payload = json.dumps(
+            {
+                "schema": "aip.v0",
+                "mutations": [
+                    {
+                        "op": "update_node",
                         "path": "../outside_victim.py",
-                        "language": "python",
-                        "op": "replace_node",
-                        "target": {"symbol": "x"},
-                        "code": "x = 1\n",
+                        "node_id": "func:x",
+                        "content": "def x():\n    return 1\n",
                     }
                 ],
             }
@@ -246,6 +272,7 @@ class TestProposalPathContainment:
             },
         )
         assert resp.status_code == 400
+        assert "Path traversal segment is not allowed" in resp.json()["detail"]
 
         # 7. Case-insensitive .GIT/config alias via API intake
         resp = client.post(
@@ -614,11 +641,16 @@ class TestSQLitePromotionAtomicity:
                 },
             )
             assert prop2_resp.status_code == 200
+            prop2_id = prop2_resp.json()["proposal_id"]
 
             # Clear submission events before testing promotion
             published_events.clear()
 
-            # Inject a SQLite BEFORE UPDATE trigger that aborts when status becomes PROMOTED
+            # Inject SQLite triggers at two points:
+            # (a) during status_updates (when Proposal.status becomes PROMOTED), and
+            # (b) at final trust_commit flush (when AgentMetric.promoted_count is incremented after
+            #     Promotion, AetherHead, OperationGraphNode, ProposalStatus.PROMOTED,
+            #     ConflictSet.resolved, and loser ProposalStatus.SUPERSEDED have all been flushed).
             with Session(engine) as session:
                 session.exec(
                     text(
@@ -632,6 +664,30 @@ class TestSQLitePromotionAtomicity:
                         """
                     )
                 )
+                session.exec(
+                    text(
+                        """
+                        CREATE TRIGGER reject_final_trust_commit_update
+                        BEFORE UPDATE ON aether_agent_metrics
+                        WHEN NEW.promoted_count > 0
+                        BEGIN
+                            SELECT RAISE(ABORT, 'injected_final_trust_commit_failure');
+                        END;
+                        """
+                    )
+                )
+                session.exec(
+                    text(
+                        """
+                        CREATE TRIGGER reject_final_trust_commit_insert
+                        BEFORE INSERT ON aether_agent_metrics
+                        WHEN NEW.promoted_count > 0
+                        BEGIN
+                            SELECT RAISE(ABORT, 'injected_final_trust_commit_failure');
+                        END;
+                        """
+                    )
+                )
                 session.commit()
 
             promote_resp = client.post(
@@ -640,7 +696,19 @@ class TestSQLitePromotionAtomicity:
             )
             assert promote_resp.status_code == 500
 
-            # Verify no canonical promotion state was left committed
+            # Drop the mid-transaction status trigger so the second attempt reaches final trust_commit
+            # after flushing Promotion, AetherHead, OperationGraphNode, PROMOTED, ConflictSet, and SUPERSEDED.
+            with Session(engine) as session:
+                session.exec(text("DROP TRIGGER reject_promoted_status;"))
+                session.commit()
+
+            promote_final_abort_resp = client.post(
+                f"/v1/repos/{repo_id}/promotions",
+                json={"proposal_ids": [prop1_id]},
+            )
+            assert promote_final_abort_resp.status_code == 500
+
+            # Verify no canonical promotion state was left committed after final-commit abort
             with Session(engine) as session:
                 repo = session.get(routes.Repository, repo_id)
                 assert repo is not None
@@ -662,6 +730,15 @@ class TestSQLitePromotionAtomicity:
                 ).all()
                 assert op_nodes == []
 
+                prop1_after_rollback = session.get(Proposal, prop1_id)
+                assert prop1_after_rollback is not None
+                assert prop1_after_rollback.status != ProposalStatus.PROMOTED
+                assert prop1_after_rollback.promoted_at is None
+
+                prop2_after_rollback = session.get(Proposal, prop2_id)
+                assert prop2_after_rollback is not None
+                assert prop2_after_rollback.status == ProposalStatus.PENDING
+
                 conflict_sets = session.exec(
                     select(ConflictSet).where(ConflictSet.repo_id == repo_id)
                 ).all()
@@ -676,6 +753,7 @@ class TestSQLitePromotionAtomicity:
             # Verify no promotion/conflict/head events were published when commit failed
             forbidden_event_types = {
                 EventType.PROPOSAL_PROMOTED,
+                EventType.PROPOSAL_REJECTED,
                 EventType.CONFLICT_RESOLVED,
                 EventType.HEAD_UPDATED,
             }
@@ -684,9 +762,10 @@ class TestSQLitePromotionAtomicity:
                 f"Events published despite transaction rollback: {published_types}"
             )
 
-            # Now remove the trigger and verify promotion succeeds cleanly in one transaction
+            # Now remove the final-commit triggers and verify promotion succeeds cleanly in one transaction
             with Session(engine) as session:
-                session.exec(text("DROP TRIGGER reject_promoted_status;"))
+                session.exec(text("DROP TRIGGER reject_final_trust_commit_update;"))
+                session.exec(text("DROP TRIGGER reject_final_trust_commit_insert;"))
                 session.commit()
 
             published_events.clear()
@@ -726,6 +805,145 @@ class TestSQLitePromotionAtomicity:
             assert EventType.PROPOSAL_PROMOTED in retry_event_types
             assert EventType.CONFLICT_RESOLVED in retry_event_types
             assert EventType.HEAD_UPDATED in retry_event_types
+        finally:
+            event_bus.unsubscribe(sub_id)
+
+    def test_sqlite_final_session_commit_failure_rolls_back_all_canonical_state(
+        self, api_env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Directly fail PromotionEngine's final session.commit() after conflict/trust mutations."""
+        monkeypatch.setenv("AETHER_DEFER_CONFLICT_DETECTION", "false")
+        engine = api_env["engine"]
+        event_bus: EventBus = api_env["event_bus"]
+        storage_dir: Path = api_env["storage_dir"]
+
+        published_events: list[AetherEvent] = []
+        sub_id = event_bus.subscribe(lambda evt: published_events.append(evt))
+
+        try:
+            with Session(engine) as session:
+                repo_service = RepositoryService(session, storage_dir)
+                proposal_service = ProposalService(session, event_bus, repo_service)
+                snapshot_service = SnapshotService(session, event_bus, storage_dir)
+                gate_runner = GateRunner(session, event_bus)
+                promotion_engine = PromotionEngine(
+                    session,
+                    event_bus,
+                    proposal_service,
+                    snapshot_service,
+                    gate_runner,
+                    storage_dir,
+                )
+
+                repo = repo_service.create_repository(
+                    name="final-commit-abort-repo",
+                    config=routes.RepoConfig(
+                        gates=[
+                            GateConfig(
+                                name="build",
+                                command="echo 'Build OK'",
+                                required=True,
+                                timeout_seconds=10,
+                            )
+                        ]
+                    ),
+                )
+                doc_store = repo_service.get_document_store(repo.id)
+                assert doc_store is not None
+
+                prop1_resp = asyncio_run(
+                    proposal_service.submit_proposal(
+                        repo.id,
+                        ProposalCreate(
+                            agent_id="agent-final-1",
+                            change_type="full_file",
+                            change_content="FINAL = 1\n",
+                            affected_paths=["final.py"],
+                            confidence_score=0.95,
+                        ),
+                    )
+                )
+                prop2_resp = asyncio_run(
+                    proposal_service.submit_proposal(
+                        repo.id,
+                        ProposalCreate(
+                            agent_id="agent-final-2",
+                            change_type="full_file",
+                            change_content="FINAL = 2\n",
+                            affected_paths=["final.py"],
+                            confidence_score=0.55,
+                        ),
+                    )
+                )
+                prop1 = proposal_service.get_proposal(prop1_resp.proposal_id)
+                prop2 = proposal_service.get_proposal(prop2_resp.proposal_id)
+                assert prop1 is not None and prop2 is not None
+                repo_id = repo.id
+                prop1_id = prop1.id
+                prop2_id = prop2.id
+
+                candidate = asyncio_run(promotion_engine.evaluate_proposal(prop1, doc_store))
+                published_events.clear()
+
+                real_commit = session.commit
+
+                def _fail_final_commit():
+                    # Flush all pending changes (including conflict set resolution and trust metric)
+                    # into the SQLite transaction, then raise right at the final commit boundary.
+                    session.flush()
+                    raise RuntimeError("simulated_final_commit_failure")
+
+                monkeypatch.setattr(session, "commit", _fail_final_commit)
+                with pytest.raises(RuntimeError, match="simulated_final_commit_failure"):
+                    asyncio_run(promotion_engine.promote(repo_id, candidate, doc_store))
+                monkeypatch.setattr(session, "commit", real_commit)
+
+            with Session(engine) as verify_session:
+                repo_row = verify_session.get(routes.Repository, repo_id)
+                assert repo_row is not None
+                assert repo_row.head_sequence == 0
+                assert repo_row.head_id is None
+
+                assert (
+                    verify_session.exec(
+                        select(Promotion).where(Promotion.repo_id == repo_id)
+                    ).all()
+                    == []
+                )
+                assert (
+                    verify_session.exec(
+                        select(AetherHead).where(AetherHead.repo_id == repo_id)
+                    ).all()
+                    == []
+                )
+                assert (
+                    verify_session.exec(
+                        select(OperationGraphNode).where(OperationGraphNode.repo_id == repo_id)
+                    ).all()
+                    == []
+                )
+
+                p1_row = verify_session.get(Proposal, prop1_id)
+                assert p1_row is not None
+                assert p1_row.status == ProposalStatus.EVALUATING
+                assert p1_row.promoted_at is None
+
+                p2_row = verify_session.get(Proposal, prop2_id)
+                assert p2_row is not None
+                assert p2_row.status == ProposalStatus.PENDING
+
+                cs_rows = verify_session.exec(
+                    select(ConflictSet).where(ConflictSet.repo_id == repo_id)
+                ).all()
+                assert len(cs_rows) == 1
+                assert cs_rows[0].resolved is False
+                assert cs_rows[0].resolved_at is None
+                assert cs_rows[0].active_choice_id is None
+
+                metric_row = verify_session.get(AgentMetric, ("agent-final-1", "global"))
+                assert metric_row is None or metric_row.promoted_count == 0
+
+            assert published_events == []
         finally:
             event_bus.unsubscribe(sub_id)
 
