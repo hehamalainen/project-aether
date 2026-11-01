@@ -100,11 +100,12 @@ async fn test_pg_concurrency_conservation_route() {
                         "proposal_title": "Conc Test",
                         "proposal_description": "Testing",
                         "confidence_score": 0.9,
-                        "affected_paths": [],
+                        "affected_paths": [format!("src/task_{}.py", i)],
                         "dependencies": [],
                         "requires_tests": false,
                         "requires_security_scan": false,
                         "source": "conc_test",
+                        "change_type": "full_file",
                         "change_content": format!("def test_{}_{}(): pass\n", repo_idx, i)
                     }))
                     .send()
@@ -311,6 +312,7 @@ async fn test_pg_crdt_timing_telemetry_route() {
             "requires_tests": false,
             "requires_security_scan": false,
             "source": "crdt_telemetry_test",
+            "change_type": "full_file",
             "change_content": "def main(): print('Hello timing!')\n"
         }))
         .send()
@@ -495,6 +497,7 @@ async fn test_pg_crdt_concurrency_advisory_lock() {
                     "requires_tests": false,
                     "requires_security_scan": false,
                     "source": "crdt_concurrency_test",
+                    "change_type": "full_file",
                     "change_content": format!("def fn_{}(): pass\n", i)
                 }))
                 .send()
