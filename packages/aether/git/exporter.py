@@ -6,6 +6,8 @@ Exports Aether state back to Git:
 3. Create deterministic git bundles for distribution
 """
 
+from __future__ import annotations
+
 import subprocess
 import tempfile
 from pathlib import Path

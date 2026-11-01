@@ -137,7 +137,7 @@ python examples/reproducible_gate_verification_demo.py
 # 5. Synthetic 4-case semantic merge & simulated-synthesis qualification suite (SQLite in-memory)
 python qualification/semantic_suite/run.py --db-profile sqlite --output-dir /tmp
 
-# 6. Full Python test suite (289 passed, 7 skipped by default: 5 live-PostgreSQL tests in test_postgres_concurrency.py and 2 opt-in load tests gated by AETHER_ENABLE_CONTINUOUS_SWARM_TESTS and AETHER_ENABLE_SOAK_TESTS)
+# 6. Full Python test suite (328 passed, 7 skipped by default: 5 live-PostgreSQL tests in test_postgres_concurrency.py and 2 opt-in load tests gated by AETHER_ENABLE_CONTINUOUS_SWARM_TESTS and AETHER_ENABLE_SOAK_TESTS)
 python -m pytest tests/aether/ -v
 ```
 
@@ -165,6 +165,11 @@ npm run dev
 ```
 
 ---
+
+## Related projects
+
+- [MX Swarm](https://github.com/hehamalainen/evolution-mx-swarm)
+- [RSILoop](https://github.com/hehamalainen/RSILoop)
 
 ## License
 

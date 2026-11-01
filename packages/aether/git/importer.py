@@ -7,6 +7,8 @@ Converts a Git repository into Aether CRDT state:
 4. Optionally import commit history as proposals
 """
 
+from __future__ import annotations
+
 import subprocess
 import tempfile
 from pathlib import Path

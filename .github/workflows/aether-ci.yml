@@ -11,6 +11,10 @@ jobs:
   aether-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
 
     steps:
       - name: Checkout
@@ -21,7 +25,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
@@ -53,7 +57,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aether-burst-throughput
+          name: aether-burst-throughput-${{ matrix.python-version }}
           path: .pytest-artifacts/burst-throughput.txt
 
   aether-soak:
