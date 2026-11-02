@@ -43,6 +43,34 @@ class StructuredDocument:
         self.node_order = [node_id]
 
     @staticmethod
+    def _is_module_docstring_stmt(stmt: cst.CSTNode, stmt_index: int, has_ast_docstring: bool) -> bool:
+        """Return True when stmt is the module-level docstring at the start of the module body."""
+        if stmt_index != 0 or not has_ast_docstring:
+            return False
+        if not isinstance(stmt, cst.SimpleStatementLine) or len(stmt.body) != 1:
+            return False
+        first = stmt.body[0]
+        return isinstance(first, cst.Expr) and isinstance(
+            first.value, (cst.SimpleString, cst.ConcatenatedString)
+        )
+
+    @staticmethod
+    def _is_import_stmt(stmt: cst.CSTNode) -> bool:
+        """Return True when stmt is a line consisting solely of import statements."""
+        return (
+            isinstance(stmt, cst.SimpleStatementLine)
+            and bool(stmt.body)
+            and all(isinstance(b, (cst.Import, cst.ImportFrom)) for b in stmt.body)
+        )
+
+    @staticmethod
+    def _strip_synthetic_eof_newline(text: str, default_newline: str) -> str:
+        """Remove the trailing newline LibCST synthesizes when the source has no EOF newline."""
+        if default_newline and text.endswith(default_newline):
+            return text[: -len(default_newline)]
+        return text
+
+    @staticmethod
     def _class_member_start_line(node: ast.stmt) -> int:
         """Best-effort starting line for class member, including decorators."""
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -74,9 +102,10 @@ class StructuredDocument:
             return
 
         raw_class_slice = "".join(source_lines[class_start - 1 : class_end])
-        leading_prefix = ""
-        if raw_class_slice and full_class_text.endswith(raw_class_slice):
-            leading_prefix = full_class_text[: len(full_class_text) - len(raw_class_slice)]
+        if not raw_class_slice or not full_class_text.endswith(raw_class_slice):
+            self._add_node(f"CLASS:{class_name}::__head__", full_class_text)
+            return
+        leading_prefix = full_class_text[: len(full_class_text) - len(raw_class_slice)]
 
         methods = [
             node
@@ -90,11 +119,14 @@ class StructuredDocument:
         methods.sort(key=self._class_member_start_line)
 
         first_start = self._class_member_start_line(methods[0])
-        if first_start > class_start:
-            header_text = "".join(source_lines[class_start - 1 : first_start - 1])
-            header_text = leading_prefix + header_text
-            if header_text:
-                self._add_node(f"CLASS:{class_name}::__head__", header_text)
+        if first_start <= class_start:
+            self._add_node(f"CLASS:{class_name}::__head__", full_class_text)
+            return
+
+        header_text = "".join(source_lines[class_start - 1 : first_start - 1])
+        header_text = leading_prefix + header_text
+        if header_text:
+            self._add_node(f"CLASS:{class_name}::__head__", header_text)
 
         for idx, method in enumerate(methods):
             start_line = self._class_member_start_line(method)
@@ -114,76 +146,85 @@ class StructuredDocument:
             self._add_node(method_id, method_text)
 
     def _decompose_tree(self, tree: cst.Module, source_code: str):
-        """Decompose LibCST module into semantic nodes."""
+        """Decompose LibCST module into semantic nodes while preserving exact source order."""
         self.nodes = {}
         self.node_order = []
 
         source_lines = source_code.splitlines(keepends=True)
         class_nodes: list[ast.ClassDef] = []
+        has_ast_docstring = False
         try:
             py_tree = ast.parse(source_code)
             class_nodes = [node for node in py_tree.body if isinstance(node, ast.ClassDef)]
+            has_ast_docstring = ast.get_docstring(py_tree, clean=False) is not None
         except Exception:
             class_nodes = []
+            has_ast_docstring = False
         class_index = 0
-        
-        # 1. Handle Module Header (whitespace/comments before imports)
+
+        # 1. Handle Module Header (leading comments/blank lines before the first statement)
         if tree.header:
             header_code = "".join(tree.code_for_node(line) for line in tree.header)
+            if not tree.has_trailing_newline and not tree.body and not tree.footer:
+                header_code = self._strip_synthetic_eof_newline(header_code, tree.default_newline)
             if header_code:
                 self._add_node("__header__", header_code)
-        
-        # 2. Group Imports
-        imports: List[cst.CSTNode] = []
-        body_remain: List[cst.CSTNode] = []
-        
-        for stmt in tree.body:
-            if isinstance(stmt, cst.SimpleStatementLine):
-                is_import = any(isinstance(b, (cst.Import, cst.ImportFrom)) for b in stmt.body)
-                if is_import:
-                    imports.append(stmt)
-                    continue
-            body_remain.append(stmt)
-            
-        if imports:
-            node_id = "__imports__"
-            import_code = "".join(tree.code_for_node(i) for i in imports)
-            self._add_node(node_id, import_code)
-            
-        # 3. Process remaining body
-        for stmt in body_remain:
-            if isinstance(stmt, cst.FunctionDef):
-                node_id = f"FUNC:{stmt.name.value}"
-                self._add_node(node_id, tree.code_for_node(stmt))
+
+        # 2. Process module body strictly in source order, grouping only contiguous
+        # import or global statement runs so untouched statements never move.
+        active_group_base: Optional[str] = None
+        active_group_id: Optional[str] = None
+        last_body_index = len(tree.body) - 1
+
+        for idx, stmt in enumerate(tree.body):
+            stmt_code = tree.code_for_node(stmt)
+            if idx == last_body_index and not tree.footer and not tree.has_trailing_newline:
+                stmt_code = self._strip_synthetic_eof_newline(stmt_code, tree.default_newline)
+
+            if self._is_module_docstring_stmt(stmt, idx, has_ast_docstring):
+                self._add_node("__docstring__", stmt_code)
+                active_group_base = None
+                active_group_id = None
+            elif self._is_import_stmt(stmt):
+                if active_group_base == "__imports__" and active_group_id is not None:
+                    current_text = self.nodes[active_group_id].get_text()
+                    self.nodes[active_group_id].set_text(current_text + stmt_code)
+                else:
+                    active_group_id = self._add_node("__imports__", stmt_code)
+                    active_group_base = "__imports__"
+            elif isinstance(stmt, cst.FunctionDef):
+                self._add_node(f"FUNC:{stmt.name.value}", stmt_code)
+                active_group_base = None
+                active_group_id = None
             elif isinstance(stmt, cst.ClassDef):
-                full_class_text = tree.code_for_node(stmt)
                 class_node = class_nodes[class_index] if class_index < len(class_nodes) else None
                 if class_index < len(class_nodes):
                     class_index += 1
                 self._decompose_class_by_methods(
                     class_name=stmt.name.value,
                     class_node=class_node,
-                    full_class_text=full_class_text,
+                    full_class_text=stmt_code,
                     source_lines=source_lines,
                 )
+                active_group_base = None
+                active_group_id = None
             else:
-                # Group other statements into globals
-                node_id = "__globals__"
-                content = tree.code_for_node(stmt)
-                if node_id in self.nodes:
-                    # Append text to existing globals node text
-                    current_text = self.nodes[node_id].get_text()
-                    self.nodes[node_id].set_text(current_text + content)
+                if active_group_base == "__globals__" and active_group_id is not None:
+                    current_text = self.nodes[active_group_id].get_text()
+                    self.nodes[active_group_id].set_text(current_text + stmt_code)
                 else:
-                    self._add_node(node_id, content)
+                    active_group_id = self._add_node("__globals__", stmt_code)
+                    active_group_base = "__globals__"
 
-        # 4. Handle Module Footer
+        # 3. Handle Module Footer
         if tree.footer:
             footer_code = "".join(tree.code_for_node(line) for line in tree.footer)
+            if not tree.has_trailing_newline:
+                footer_code = self._strip_synthetic_eof_newline(footer_code, tree.default_newline)
             if footer_code:
                 self._add_node("__footer__", footer_code)
 
-    def _add_node(self, node_id: str, content: str):
+    def _add_node(self, node_id: str, content: str) -> str:
         base_id = node_id
         suffix = 2
         while node_id in self.nodes:
@@ -195,6 +236,7 @@ class StructuredDocument:
         self.nodes[node_id] = doc
         if node_id not in self.node_order:
             self.node_order.append(node_id)
+        return node_id
 
     def get_full_text(self) -> str:
         """Stitch all nodes back into a single file."""

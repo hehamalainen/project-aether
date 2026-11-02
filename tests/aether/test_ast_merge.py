@@ -59,6 +59,41 @@ class MyClass:
     assert "FUNC:func1" in doc.list_nodes()
     assert any(node.startswith("CLASS:MyClass") for node in doc.list_nodes())
 
+
+def test_round_trip_preserves_module_docstring_before_imports_and_interleaved_globals():
+    """Module docstrings, future imports, and interleaved globals must keep exact source order."""
+    import ast
+
+    source = (
+        '"""Runtime module docstring on line 1."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "import os\n"
+        "import sys\n"
+        "\n"
+        "DEFAULT_LIMIT = 64\n"
+        "\n"
+        "\n"
+        "class Runtime:\n"
+        '    """Runtime class."""\n'
+        "\n"
+        "    def __init__(self) -> None:\n"
+        "        self.limit = DEFAULT_LIMIT\n"
+        "\n"
+        "\n"
+        '__all__ = ["Runtime"]'
+    )
+    doc = StructuredDocument("replica-docstring")
+    doc.set_content(source)
+
+    reconstructed = doc.get_full_text()
+    assert reconstructed == source
+    assert doc.get_node_at_line(1) == "__docstring__"
+    assert doc.list_nodes()[:3] == ["__docstring__", "__imports__", "__globals__"]
+    assert doc.list_nodes()[-1] == "__globals__#2"
+    assert ast.get_docstring(ast.parse(reconstructed)) == "Runtime module docstring on line 1."
+
 def test_disjoint_edits_no_conflict(proposal_service, doc_store, db_session):
     """Edits to different functions in the same file should not conflict."""
     from packages.aether.services.promotion_engine import PromotionEngine

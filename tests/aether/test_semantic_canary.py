@@ -592,3 +592,104 @@ async def test_cohort_evaluate_rollback_on_promotion_failure(promotion_engine, d
     assert cont_meta2 is not None
     assert cont_meta2.defer_evaluation is True
     assert cont_meta2.contention_policy == "semantic_merge"
+
+
+@pytest.mark.asyncio
+async def test_cohort_merge_preserves_module_docstring_and_dunder_doc(
+    promotion_engine, db_session, repo_service, proposal_service, snapshot_service
+):
+    import ast
+
+    promotion_engine.semantic_merge_enabled = True
+
+    repo = repo_service.create_repository("test-repo-docstring")
+    doc_store = DocumentStore(promotion_engine.storage_path)
+    base_file = (
+        '"""Runtime orchestration module."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "import os\n"
+        "import sys\n"
+        "\n"
+        "\n"
+        "class Runtime:\n"
+        "    def __init__(self) -> None:\n"
+        "        self.ready = True\n"
+    )
+    doc_store.apply_full_file("runtime.py", base_file, "init")
+    snap = await snapshot_service.create_snapshot(repo.id, doc_store, [])
+    repo.head_id = snap.id
+    db_session.add(repo)
+    db_session.commit()
+
+    p1 = await proposal_service.submit_proposal(
+        repo.id,
+        ProposalCreate(
+            agent_id="agent-b",
+            change_type="full_file",
+            change_content=(
+                base_file
+                + "\n"
+                + "    def get_name(self) -> str:\n"
+                + "        return 'runtime'\n"
+            ),
+            affected_paths=["runtime.py"],
+            defer_evaluation=True,
+            contention_group_id="group-doc",
+            contention_policy="semantic_merge",
+            source_run_id="run-doc",
+        ),
+    )
+
+    p2 = await proposal_service.submit_proposal(
+        repo.id,
+        ProposalCreate(
+            agent_id="agent-c",
+            change_type="full_file",
+            change_content=(
+                base_file
+                + "\n"
+                + "    def get_pid(self) -> int:\n"
+                + "        return os.getpid()\n"
+            ),
+            affected_paths=["runtime.py"],
+            defer_evaluation=True,
+            contention_group_id="group-doc",
+            contention_policy="semantic_merge",
+            source_run_id="run-doc",
+        ),
+    )
+
+    res = await promotion_engine.evaluate_and_promote_cohort(
+        repo_id=repo.id,
+        proposal_ids=[p1.proposal_id, p2.proposal_id],
+        document_store=doc_store,
+    )
+    assert res.promotion is not None
+    assert set(json.loads(res.promotion.included_proposals)) == {p1.proposal_id, p2.proposal_id}
+
+    repo_refreshed = db_session.get(Repository, repo.id)
+    head = db_session.get(AetherHead, repo_refreshed.head_id)
+    assert head is not None
+    merged_content = snapshot_service.get_file_content(head.snapshot_id, "runtime.py")
+    assert merged_content is not None
+
+    assert merged_content.splitlines()[0] == '"""Runtime orchestration module."""'
+    namespace: dict[str, object] = {}
+    exec(compile(merged_content, "runtime.py", "exec"), namespace)
+    assert namespace["__doc__"] == "Runtime orchestration module."
+
+    base_tree = ast.parse(base_file)
+    merged_tree = ast.parse(merged_content)
+    for node in merged_tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "Runtime":
+            node.body = [
+                member
+                for member in node.body
+                if not (
+                    isinstance(member, ast.FunctionDef)
+                    and member.name in {"get_name", "get_pid"}
+                )
+            ]
+    assert ast.dump(merged_tree) == ast.dump(base_tree)

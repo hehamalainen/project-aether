@@ -104,3 +104,89 @@ def test_invalid_syntax_in_input_returns_none():
     merged, reason = attempt_structural_merge(base, content_a, content_b)
     assert merged is None
     assert reason == "PARSE_FAILURE"
+
+
+def test_structural_merge_preserves_module_docstring_on_line_1_and_untouched_order():
+    import ast
+
+    header = (
+        '"""Runtime orchestration primitives."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "import asyncio\n"
+        "import dataclasses\n"
+        "from typing import Any\n"
+        "\n"
+        "DEFAULT_WORKERS = 4\n"
+        "\n"
+        "\n"
+    )
+    footer = (
+        "\n"
+        "\n"
+        '__all__ = ["Runtime"]\n'
+    )
+    base = (
+        header
+        + "class Runtime:\n"
+        + '    """Runtime service."""\n'
+        + "\n"
+        + "    def __init__(self) -> None:\n"
+        + "        self.workers = DEFAULT_WORKERS\n"
+        + footer
+    )
+    content_a = (
+        header
+        + "class Runtime:\n"
+        + '    """Runtime service."""\n'
+        + "\n"
+        + "    def __init__(self) -> None:\n"
+        + "        self.workers = DEFAULT_WORKERS\n"
+        + "\n"
+        + "    def status(self) -> dict[str, Any]:\n"
+        + '        return {"workers": self.workers}\n'
+        + footer
+    )
+    content_b = (
+        header
+        + "class Runtime:\n"
+        + '    """Runtime service."""\n'
+        + "\n"
+        + "    def __init__(self) -> None:\n"
+        + "        self.workers = DEFAULT_WORKERS\n"
+        + "\n"
+        + "    async def ping(self) -> bool:\n"
+        + "        await asyncio.sleep(0)\n"
+        + "        return True\n"
+        + footer
+    )
+
+    merged, reason = attempt_structural_merge(base, content_a, content_b)
+    assert reason is None
+    assert merged is not None
+
+    # Module docstring must remain on line 1 (not moved below imports), preserving __doc__.
+    assert merged.startswith(header)
+    assert merged.endswith(footer)
+    assert merged.splitlines()[0] == '"""Runtime orchestration primitives."""'
+
+    namespace: dict[str, object] = {}
+    exec(compile(merged, "runtime.py", "exec"), namespace)
+    assert namespace["__doc__"] == "Runtime orchestration primitives."
+
+    # Order-sensitive AST comparison without stripping the module docstring:
+    # removing only the two added methods must reproduce the exact base AST.
+    base_tree = ast.parse(base)
+    merged_tree = ast.parse(merged)
+    for node in merged_tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "Runtime":
+            node.body = [
+                member
+                for member in node.body
+                if not (
+                    isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and member.name in {"status", "ping"}
+                )
+            ]
+    assert ast.dump(merged_tree) == ast.dump(base_tree)
