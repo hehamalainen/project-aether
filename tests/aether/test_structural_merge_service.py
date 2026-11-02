@@ -190,3 +190,67 @@ def test_structural_merge_preserves_module_docstring_on_line_1_and_untouched_ord
                 )
             ]
     assert ast.dump(merged_tree) == ast.dump(base_tree)
+
+
+def test_structural_merge_preserves_untouched_method_and_decorator_order():
+    base = (
+        '"""Runtime module."""\n'
+        "import os\n\n"
+        "class Runtime:\n"
+        "    def z_decorator(fn):\n"
+        "        return fn\n\n"
+        "    @z_decorator\n"
+        "    def alpha(self):\n"
+        "        return 1\n"
+    )
+    content_a = base.rstrip("\n") + '\n\n    def get_pid(self):\n        return os.getpid()\n'
+    content_b = base.rstrip("\n") + '\n\n    def get_name(self):\n        return "runtime"\n'
+
+    merged_ab, reason_ab = attempt_structural_merge(base, content_a, content_b)
+    merged_ba, reason_ba = attempt_structural_merge(base, content_b, content_a)
+    assert reason_ab is None
+    assert reason_ba is None
+    assert merged_ab is not None
+    assert merged_ab == merged_ba
+
+    namespace: dict[str, object] = {}
+    exec(compile(merged_ab, "runtime.py", "exec"), namespace)
+    assert namespace["__doc__"] == "Runtime module."
+    runtime_cls = namespace["Runtime"]
+    instance = runtime_cls()
+    assert instance.alpha() == 1
+    assert instance.get_name() == "runtime"
+
+
+def test_structural_merge_handles_missing_eof_newlines_across_base_and_proposals():
+    base = (
+        '"""Runtime module."""\n'
+        "import os\n\n"
+        "class Runtime:\n"
+        "    def __init__(self):\n"
+        "        self.ready = True"
+    )
+    content_a = base + '\n\n    def get_name(self):\n        return "runtime"'
+    content_b = base + "\n\n    def get_pid(self):\n        return os.getpid()"
+
+    merged, reason = attempt_structural_merge(base, content_a, content_b)
+    assert reason is None
+    assert merged is not None
+
+    namespace: dict[str, object] = {}
+    exec(compile(merged, "runtime.py", "exec"), namespace)
+    assert namespace["__doc__"] == "Runtime module."
+    instance = namespace["Runtime"]()
+    assert instance.ready is True
+    assert instance.get_name() == "runtime"
+    assert isinstance(instance.get_pid(), int)
+
+
+def test_structural_merge_syntax_validation_rejects_mismatched_method_indentation():
+    base = "class Runtime:\n  def __init__(self): pass\n"
+    content_a = "class Runtime:\n  def __init__(self): pass\n  def get_name(self): return 1\n"
+    content_b = "class Runtime:\n    def __init__(self): pass\n    def get_pid(self): return 2\n"
+
+    merged, reason = attempt_structural_merge(base, content_a, content_b)
+    assert merged is None
+    assert reason == "RECONSTRUCTION_FAILURE"

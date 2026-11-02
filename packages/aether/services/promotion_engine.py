@@ -484,7 +484,15 @@ class PromotionEngine:
             return None
 
         # Parse documents using StructuredDocument
-        from .structural_merge import StructuredDocument, is_class_member_node, get_modified_nodes, RGADocument
+        from .structural_merge import (
+            RGADocument,
+            StructuredDocument,
+            ensure_valid_node_boundaries,
+            get_modified_nodes,
+            is_class_member_node,
+            splice_added_class_members,
+            validate_reconstructed_python,
+        )
         base_doc = StructuredDocument("base")
         base_doc.set_content(base_content)
 
@@ -515,6 +523,12 @@ class PromotionEngine:
         symbol_id = list(overlap)[0]
         if not is_class_member_node(symbol_id):
             logger.info("synthesis_ineligible: non_class_member_symbol", symbol=symbol_id)
+            return None
+        if not all(is_class_member_node(nid) for nid in (mod_a | mod_b)):
+            logger.info("synthesis_ineligible: non_class_member_side_modification")
+            return None
+        if symbol_id not in base_doc.nodes or symbol_id not in doc_a.nodes or symbol_id not in doc_b.nodes:
+            logger.info("synthesis_ineligible: overlapping_symbol_missing_in_version", symbol=symbol_id)
             return None
 
         # Get parent symbol ID (e.g. CLASS:User)
@@ -659,74 +673,58 @@ class PromotionEngine:
         # Build merged document applying the synthesized candidate replacement
         candidate_text = resp.candidates[0].candidate_text
         merged_doc = StructuredDocument("merged")
-        
-        # Initialize with base nodes
+
+        # Initialize with base nodes in exact base order
         for n_id in base_doc.list_nodes():
             doc = RGADocument("merged")
             doc.set_text(base_doc.nodes[n_id].get_text())
             merged_doc.nodes[n_id] = doc
             merged_doc.node_order.append(n_id)
 
-        # Helper to insert class member deterministically
-        def insert_class_member(n_id: str, content: str):
-            parts = n_id.split("::")
-            class_prefix = parts[0]
-            head_id = f"{class_prefix}::__head__"
-            class_methods = []
-            for existing_id in merged_doc.node_order:
-                if existing_id.startswith(f"{class_prefix}::") and existing_id != head_id:
-                    class_methods.append(existing_id)
-            if n_id not in class_methods:
-                class_methods.append(n_id)
-            class_methods.sort()
-
-            start_idx = -1
-            if head_id in merged_doc.node_order:
-                start_idx = merged_doc.node_order.index(head_id)
-            elif class_prefix in merged_doc.node_order:
-                start_idx = merged_doc.node_order.index(class_prefix)
-            
-            if start_idx == -1:
-                merged_doc.update_node(n_id, content)
-                return
-
-            for m_id in class_methods:
-                if m_id in merged_doc.node_order:
-                    merged_doc.node_order.remove(m_id)
-            
-            for i, m_id in enumerate(class_methods):
-                merged_doc.node_order.insert(start_idx + 1 + i, m_id)
-                
-            merged_doc.update_node(n_id, content)
-
         # Apply the synthesized candidate text to the conflicting symbol node
         merged_doc.update_node(symbol_id, candidate_text)
 
-        # Apply other non-conflicting modified nodes from mod_a
+        added_a: set[str] = set()
+        deleted_ids: list[str] = []
         for n_id in mod_a:
             if n_id == symbol_id:
                 continue
-            content = doc_a.nodes[n_id].get_text()
-            if n_id in merged_doc.nodes:
-                merged_doc.update_node(n_id, content)
+            if n_id not in doc_a.nodes:
+                deleted_ids.append(n_id)
+            elif n_id in merged_doc.nodes:
+                merged_doc.update_node(n_id, doc_a.nodes[n_id].get_text())
             else:
-                insert_class_member(n_id, content)
+                added_a.add(n_id)
 
-        # Apply other non-conflicting modified nodes from mod_b
+        added_b: set[str] = set()
         for n_id in mod_b:
             if n_id == symbol_id:
                 continue
-            content = doc_b.nodes[n_id].get_text()
-            if n_id in merged_doc.nodes:
-                merged_doc.update_node(n_id, content)
+            if n_id not in doc_b.nodes:
+                deleted_ids.append(n_id)
+            elif n_id in merged_doc.nodes:
+                merged_doc.update_node(n_id, doc_b.nodes[n_id].get_text())
             else:
-                insert_class_member(n_id, content)
+                added_b.add(n_id)
+
+        splice_added_class_members(merged_doc, base_doc, doc_a, added_a, doc_b, added_b)
+
+        for n_id in deleted_ids:
+            merged_doc.nodes.pop(n_id, None)
+            if n_id in merged_doc.node_order:
+                merged_doc.node_order.remove(n_id)
+
+        ensure_valid_node_boundaries(merged_doc)
 
         try:
-            return merged_doc.get_full_text()
+            merged_text = merged_doc.get_full_text()
         except Exception as e:
             logger.error("synthesis_merge_reconstruction_failed", error=str(e))
             return None
+
+        if not validate_reconstructed_python(merged_text):
+            return None
+        return merged_text
 
     def _find_temporal_conflicts(self, repo_id: str, proposal: Proposal) -> list[Proposal]:
         """Find recently promoted proposals that touch overlapping symbols since the proposal's base head."""

@@ -9,14 +9,17 @@ No external binary dependencies.
 
 from __future__ import annotations
 
-import logging
+import ast
 import re
 from typing import Optional
+
+import libcst as cst
+import structlog
 
 from packages.aether.crdt.structured_doc import StructuredDocument
 from packages.aether.crdt.rga import RGADocument
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 def is_class_member_node(node_id: str) -> bool:
@@ -28,7 +31,7 @@ def is_class_member_node(node_id: str) -> bool:
 
 
 def get_modified_nodes(base_doc: StructuredDocument, doc: StructuredDocument) -> set[str]:
-    """Find all node IDs that differ in text content from base_doc, or are new."""
+    """Find all node IDs that differ in text content from base_doc, are new, or were deleted."""
     modified = set()
     for node_id in doc.list_nodes():
         if node_id not in base_doc.nodes:
@@ -38,7 +41,146 @@ def get_modified_nodes(base_doc: StructuredDocument, doc: StructuredDocument) ->
         text_b = base_doc.nodes[node_id].get_text().strip()
         if text_a != text_b:
             modified.add(node_id)
+    for node_id in base_doc.list_nodes():
+        if node_id not in doc.nodes:
+            modified.add(node_id)
     return modified
+
+
+def _extract_new_member_runs_by_anchor(
+    base_doc: StructuredDocument,
+    replica_doc: StructuredDocument,
+    added_ids: set[str],
+    class_prefix: str,
+) -> dict[str, list[list[str]]]:
+    """
+    Group newly added class members from replica_doc into contiguous runs keyed by
+    the nearest preceding base node of the same class (or head_id if inserted at top).
+    Preserves untouched base member order as well as intra-proposal declaration order.
+    """
+    head_id = f"{class_prefix}::__head__"
+    default_anchor = head_id if head_id in base_doc.nodes else class_prefix
+    current_anchor = default_anchor
+    runs_by_anchor: dict[str, list[list[str]]] = {}
+    active_run: list[str] = []
+    active_anchor = current_anchor
+
+    for nid in replica_doc.list_nodes():
+        if nid != class_prefix and not nid.startswith(f"{class_prefix}::"):
+            continue
+        if nid in base_doc.nodes:
+            if active_run:
+                runs_by_anchor.setdefault(active_anchor, []).append(active_run)
+                active_run = []
+            current_anchor = nid
+        elif nid in added_ids:
+            if not active_run:
+                active_anchor = current_anchor
+            active_run.append(nid)
+
+    if active_run:
+        runs_by_anchor.setdefault(active_anchor, []).append(active_run)
+
+    return runs_by_anchor
+
+
+def splice_added_class_members(
+    merged_doc: StructuredDocument,
+    base_doc: StructuredDocument,
+    doc_a: StructuredDocument,
+    added_a: set[str],
+    doc_b: StructuredDocument,
+    added_b: set[str],
+) -> None:
+    """
+    Insert newly added class members into merged_doc after their respective base anchors
+    without reordering any existing base members. Runs targeting the same anchor are
+    sorted by their leading node ID for commutativity.
+    """
+    all_added = added_a | added_b
+    if not all_added:
+        return
+
+    for nid in added_a:
+        doc = RGADocument("merged")
+        doc.set_text(doc_a.nodes[nid].get_text())
+        merged_doc.nodes[nid] = doc
+    for nid in added_b:
+        doc = RGADocument("merged")
+        doc.set_text(doc_b.nodes[nid].get_text())
+        merged_doc.nodes[nid] = doc
+
+    class_prefixes = sorted({nid.split("::", 1)[0] for nid in all_added})
+    for class_prefix in class_prefixes:
+        runs_a = _extract_new_member_runs_by_anchor(base_doc, doc_a, added_a, class_prefix)
+        runs_b = _extract_new_member_runs_by_anchor(base_doc, doc_b, added_b, class_prefix)
+        anchors = set(runs_a.keys()) | set(runs_b.keys())
+
+        ordered_anchors = [nid for nid in merged_doc.node_order if nid in anchors]
+        missing_anchors = sorted(anchors - set(ordered_anchors))
+
+        for anchor in ordered_anchors:
+            combined_runs = runs_a.get(anchor, []) + runs_b.get(anchor, [])
+            combined_runs.sort(key=lambda run: run[0])
+            insert_pos = merged_doc.node_order.index(anchor) + 1
+            for run in combined_runs:
+                for nid in run:
+                    if nid not in merged_doc.node_order:
+                        merged_doc.node_order.insert(insert_pos, nid)
+                        insert_pos += 1
+
+        if missing_anchors:
+            class_indices = [
+                i
+                for i, nid in enumerate(merged_doc.node_order)
+                if nid == class_prefix or nid.startswith(f"{class_prefix}::")
+            ]
+            fallback_pos = (max(class_indices) + 1) if class_indices else len(merged_doc.node_order)
+            for anchor in missing_anchors:
+                combined_runs = runs_a.get(anchor, []) + runs_b.get(anchor, [])
+                combined_runs.sort(key=lambda run: run[0])
+                for run in combined_runs:
+                    for nid in run:
+                        if nid not in merged_doc.node_order:
+                            merged_doc.node_order.insert(fallback_pos, nid)
+                            fallback_pos += 1
+
+
+def ensure_valid_node_boundaries(merged_doc: StructuredDocument) -> None:
+    """
+    Ensure every non-final node in merged_doc ends with a valid newline separator so
+    nodes originating from inputs without a trailing EOF newline cannot concatenate
+    onto the first line of the following node.
+    """
+    total = len(merged_doc.node_order)
+    for idx, node_id in enumerate(merged_doc.node_order):
+        if idx + 1 >= total:
+            continue
+        node_doc = merged_doc.nodes.get(node_id)
+        if node_doc is None:
+            continue
+        text = node_doc.get_text()
+        if not text or text.endswith("\n"):
+            continue
+        next_id = merged_doc.node_order[idx + 1]
+        same_class_followup = (
+            node_id.startswith("CLASS:")
+            and next_id.startswith("CLASS:")
+            and node_id.split("::", 1)[0] == next_id.split("::", 1)[0]
+        )
+        separator = "\n\n" if (same_class_followup and is_class_member_node(node_id)) else "\n"
+        node_doc.set_text(text + separator)
+
+
+def validate_reconstructed_python(merged_text: str) -> bool:
+    """Verify reconstructed Python parses cleanly under both stdlib ast and LibCST."""
+    try:
+        ast.parse(merged_text)
+        cst.parse_module(merged_text)
+        return True
+    except Exception as exc:
+        logger.error("structural_merge_syntax_validation_failed", error=str(exc))
+        return False
 
 
 def attempt_structural_merge(
@@ -98,80 +240,51 @@ def attempt_structural_merge(
         logger.info("structural_merge_ineligible: direct_method_overlap_collision", overlap=list(overlap))
         return None, "WRITE_WRITE_COLLISION"
 
-    # 5. Build merged StructuredDocument
+    # 5. Build merged StructuredDocument preserving exact base member order
     merged_doc = StructuredDocument("merged")
-    
-    # Initialize with base nodes
     for node_id in base_doc.list_nodes():
         doc = RGADocument("merged")
         doc.set_text(base_doc.nodes[node_id].get_text())
         merged_doc.nodes[node_id] = doc
         merged_doc.node_order.append(node_id)
 
-    # Helper to insert a new class member node deterministically sorted
-    def insert_class_member(node_id: str, content: str):
-        # Extract class name: CLASS:<class_name>::...
-        parts = node_id.split("::")
-        class_prefix = parts[0]  # "CLASS:<class_name>"
-        head_id = f"{class_prefix}::__head__"
-
-        # Find position to insert. We place it after the class head node.
-        # To make it deterministic, we collect all methods of this class, sort them alphabetically, and place them.
-        class_methods = []
-        for existing_id in merged_doc.node_order:
-            if existing_id.startswith(f"{class_prefix}::") and existing_id != head_id:
-                class_methods.append(existing_id)
-        
-        # Add the new node to the list and sort
-        if node_id not in class_methods:
-            class_methods.append(node_id)
-        class_methods.sort()
-
-        # Find where to splice them.
-        # Locate the head_id or class_prefix node in the order
-        start_idx = -1
-        if head_id in merged_doc.node_order:
-            start_idx = merged_doc.node_order.index(head_id)
-        elif class_prefix in merged_doc.node_order:
-            start_idx = merged_doc.node_order.index(class_prefix)
-        
-        if start_idx == -1:
-            # Fallback: append at end if class definition not found
-            merged_doc.update_node(node_id, content)
-            return
-
-        # Remove existing methods from the order list, and re-insert all sorted methods
-        # to ensure deterministic order
-        for m_id in class_methods:
-            if m_id in merged_doc.node_order:
-                merged_doc.node_order.remove(m_id)
-        
-        # Insert them right after the class header/prefix
-        for i, m_id in enumerate(class_methods):
-            merged_doc.node_order.insert(start_idx + 1 + i, m_id)
-            
-        merged_doc.update_node(node_id, content)
-
-    # Apply A's changes
+    added_a: set[str] = set()
+    deleted_ids: list[str] = []
     for node_id in mod_a:
-        content = doc_a.nodes[node_id].get_text()
-        if node_id in merged_doc.nodes:
-            merged_doc.update_node(node_id, content)
+        if node_id not in doc_a.nodes:
+            deleted_ids.append(node_id)
+        elif node_id in merged_doc.nodes:
+            merged_doc.update_node(node_id, doc_a.nodes[node_id].get_text())
         else:
-            insert_class_member(node_id, content)
+            added_a.add(node_id)
 
-    # Apply B's changes
+    added_b: set[str] = set()
     for node_id in mod_b:
-        content = doc_b.nodes[node_id].get_text()
-        if node_id in merged_doc.nodes:
-            merged_doc.update_node(node_id, content)
+        if node_id not in doc_b.nodes:
+            deleted_ids.append(node_id)
+        elif node_id in merged_doc.nodes:
+            merged_doc.update_node(node_id, doc_b.nodes[node_id].get_text())
         else:
-            insert_class_member(node_id, content)
+            added_b.add(node_id)
 
-    # 6. Reconstruct merged content
+    # Splice additions before removing deleted anchors so anchor positions stay exact
+    splice_added_class_members(merged_doc, base_doc, doc_a, added_a, doc_b, added_b)
+
+    for node_id in deleted_ids:
+        merged_doc.nodes.pop(node_id, None)
+        if node_id in merged_doc.node_order:
+            merged_doc.node_order.remove(node_id)
+
+    ensure_valid_node_boundaries(merged_doc)
+
+    # 6. Reconstruct and syntax-validate merged content
     try:
         merged_text = merged_doc.get_full_text()
-        return merged_text, None
     except Exception as e:
         logger.error("structural_merge_reconstruction_error", error=str(e))
         return None, "RECONSTRUCTION_FAILURE"
+
+    if not validate_reconstructed_python(merged_text):
+        return None, "RECONSTRUCTION_FAILURE"
+
+    return merged_text, None

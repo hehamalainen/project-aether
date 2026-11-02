@@ -693,3 +693,90 @@ async def test_cohort_merge_preserves_module_docstring_and_dunder_doc(
                 )
             ]
     assert ast.dump(merged_tree) == ast.dump(base_tree)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["untouched_method_order", "missing_eof_newline"])
+async def test_promoted_merge_preserves_untouched_method_order_and_missing_eof_newline(
+    case, promotion_engine, db_session, repo_service, proposal_service, snapshot_service
+):
+    import ast
+
+    promotion_engine.semantic_merge_enabled = True
+    if case == "untouched_method_order":
+        base = (
+            '"""Runtime module."""\n'
+            "import os\n\n"
+            "class Runtime:\n"
+            "    def z_decorator(fn):\n"
+            "        return fn\n\n"
+            "    @z_decorator\n"
+            "    def alpha(self):\n"
+            "        return 1\n"
+        )
+    else:
+        base = (
+            '"""Runtime module."""\n'
+            "import os\n\n"
+            "class Runtime:\n"
+            "    def __init__(self):\n"
+            "        self.ready = True"
+        )
+    contents = [
+        base.rstrip("\n") + '\n\n    def get_name(self):\n        return "runtime"\n',
+        base.rstrip("\n") + '\n\n    def get_pid(self):\n        return os.getpid()\n',
+    ]
+
+    repo = repo_service.create_repository(f"docstring-launch-review-{case}")
+    store = DocumentStore(promotion_engine.storage_path)
+    store.apply_full_file("runtime.py", base, "init")
+    snap = await snapshot_service.create_snapshot(repo.id, store, [])
+    repo.head_id = snap.id
+    db_session.add(repo)
+    db_session.commit()
+
+    proposals = [
+        await proposal_service.submit_proposal(
+            repo.id,
+            ProposalCreate(
+                agent_id=f"agent-{index}",
+                change_type="full_file",
+                change_content=content,
+                affected_paths=["runtime.py"],
+                defer_evaluation=True,
+                contention_group_id="review-group",
+                contention_policy="semantic_merge",
+                source_run_id="review-run",
+            ),
+        )
+        for index, content in enumerate(contents)
+    ]
+
+    result = await promotion_engine.evaluate_and_promote_cohort(
+        repo_id=repo.id,
+        proposal_ids=[proposal.proposal_id for proposal in proposals],
+        document_store=store,
+    )
+    assert result.promotion is not None
+    assert set(json.loads(result.promotion.included_proposals)) == {
+        proposal.proposal_id for proposal in proposals
+    }
+
+    head = db_session.get(AetherHead, db_session.get(Repository, repo.id).head_id)
+    assert head is not None
+    merged = snapshot_service.get_file_content(head.snapshot_id, "runtime.py")
+    assert merged is not None
+    assert merged.splitlines()[0] == base.splitlines()[0]
+
+    namespace: dict[str, object] = {}
+    exec(compile(merged, "runtime.py", "exec"), namespace)
+    assert namespace["__doc__"] == "Runtime module."
+
+    merged_tree = ast.parse(merged)
+    runtime = next(node for node in merged_tree.body if isinstance(node, ast.ClassDef))
+    runtime.body = [
+        node
+        for node in runtime.body
+        if not (isinstance(node, ast.FunctionDef) and node.name in {"get_name", "get_pid"})
+    ]
+    assert ast.dump(merged_tree) == ast.dump(ast.parse(base))
