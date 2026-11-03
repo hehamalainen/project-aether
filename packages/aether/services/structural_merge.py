@@ -173,10 +173,11 @@ def ensure_valid_node_boundaries(merged_doc: StructuredDocument) -> None:
 
 
 def validate_reconstructed_python(merged_text: str) -> bool:
-    """Verify reconstructed Python parses cleanly under both stdlib ast and LibCST."""
+    """Verify reconstructed Python parses and compiles cleanly without executing it."""
     try:
         ast.parse(merged_text)
         cst.parse_module(merged_text)
+        compile(merged_text, "<aether-merge>", "exec", dont_inherit=True)
         return True
     except Exception as exc:
         logger.error("structural_merge_syntax_validation_failed", error=str(exc))
@@ -218,11 +219,11 @@ def attempt_structural_merge(
     mod_b = get_modified_nodes(base_doc, doc_b)
 
     if not mod_a and not mod_b:
-        return base_content, None
+        return (base_content, None) if validate_reconstructed_python(base_content) else (None, "RECONSTRUCTION_FAILURE")
     if not mod_a:
-        return content_b, None
+        return (content_b, None) if validate_reconstructed_python(content_b) else (None, "RECONSTRUCTION_FAILURE")
     if not mod_b:
-        return content_a, None
+        return (content_a, None) if validate_reconstructed_python(content_a) else (None, "RECONSTRUCTION_FAILURE")
 
     # 3. Whitelist check: modified nodes must be class member methods only
     for node_id in mod_a:

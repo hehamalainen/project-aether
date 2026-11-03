@@ -780,3 +780,60 @@ async def test_promoted_merge_preserves_untouched_method_order_and_missing_eof_n
         if not (isinstance(node, ast.FunctionDef) and node.name in {"get_name", "get_pid"})
     ]
     assert ast.dump(merged_tree) == ast.dump(ast.parse(base))
+
+
+@pytest.mark.asyncio
+async def test_promoted_snapshot_rejects_compiler_invalid_merge(
+    promotion_engine, db_session, repo_service, proposal_service, snapshot_service
+):
+    base = '"""Runtime module."""\nclass Runtime:\n    def existing(self):\n        return 0\n'
+    left = base + "\n    def z_method(self):\n        return 1\n\n    global counter\n"
+    right = base + "\n    def a_method(self):\n        return 2\n\n    counter = 1\n"
+    for source in (base, left, right):
+        compile(source, "input.py", "exec", dont_inherit=True)
+
+    promotion_engine.semantic_merge_enabled = True
+    repo = repo_service.create_repository("compiler-validation-review")
+    store = DocumentStore(promotion_engine.storage_path)
+    store.apply_full_file("runtime.py", base, "init")
+    snap = await snapshot_service.create_snapshot(repo.id, store, [])
+    repo.head_id = snap.id
+    db_session.add(repo)
+    db_session.commit()
+
+    proposals = [
+        await proposal_service.submit_proposal(
+            repo.id,
+            ProposalCreate(
+                agent_id=f"agent-{index}",
+                change_type="full_file",
+                change_content=source,
+                affected_paths=["runtime.py"],
+                defer_evaluation=True,
+                contention_group_id="review-group",
+                contention_policy="semantic_merge",
+                source_run_id="review-run",
+            ),
+        )
+        for index, source in enumerate((left, right))
+    ]
+
+    result = await promotion_engine.evaluate_and_promote_cohort(
+        repo_id=repo.id,
+        proposal_ids=[proposal.proposal_id for proposal in proposals],
+        document_store=store,
+    )
+    if result.promotion is not None:
+        head = db_session.get(AetherHead, db_session.get(Repository, repo.id).head_id)
+        assert head is not None
+        merged = snapshot_service.get_file_content(head.snapshot_id, "runtime.py")
+        assert merged is not None
+        compile(merged, "runtime.py", "exec", dont_inherit=True)
+
+    events = db_session.exec(
+        select(SystemMetricEvent).where(
+            SystemMetricEvent.repo_id == repo.id,
+            SystemMetricEvent.event_type == SystemMetricEventType.SEMANTIC_FALLBACK,
+        )
+    ).all()
+    assert any(event.event_reason == "RECONSTRUCTION_FAILURE" for event in events)

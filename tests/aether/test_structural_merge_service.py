@@ -254,3 +254,15 @@ def test_structural_merge_syntax_validation_rejects_mismatched_method_indentatio
     merged, reason = attempt_structural_merge(base, content_a, content_b)
     assert merged is None
     assert reason == "RECONSTRUCTION_FAILURE"
+
+
+def test_structural_merge_rejects_compiler_invalid_result_from_valid_inputs():
+    base = '"""Runtime module."""\nclass Runtime:\n    def existing(self):\n        return 0\n'
+    left = base + "\n    def z_method(self):\n        return 1\n\n    global counter\n"
+    right = base + "\n    def a_method(self):\n        return 2\n\n    counter = 1\n"
+    for source in (base, left, right):
+        compile(source, "input.py", "exec", dont_inherit=True)
+
+    merged, reason = attempt_structural_merge(base, left, right)
+    assert merged is None
+    assert reason == "RECONSTRUCTION_FAILURE"
